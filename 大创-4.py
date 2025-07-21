@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import EngFormatter
 import sympy as sp
 from io import BytesIO
+from PIL import Image
+import itertools
 
 # 设置中文字体
 plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
@@ -34,53 +36,7 @@ def init_database():
     )
     ''')
     
-    # 检查是否需要从 MySQL 迁移数据
-    cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='copper_shock_data'")
-    if cursor.fetchone()[0] == 0:
-        st.info("检测到新数据库，尝试从 MySQL 迁移数据...")
-        migrate_from_mysql()
-    
     conn.commit()
-
-# 从 MySQL 迁移数据（仅首次运行）
-def migrate_from_mysql():
-    try:
-        # 尝试连接 MySQL（需要安装 mysql-connector-python）
-        import mysql.connector
-        from mysql.connector import Error
-        
-        mysql_conn = mysql.connector.connect(
-            host='localhost',
-            user='root',
-            password='14122Lyx.',
-            database='shock_wave_db'
-        )
-        
-        if mysql_conn.is_connected():
-            st.info("成功连接到 MySQL 数据库，开始迁移数据...")
-            cursor = mysql_conn.cursor()
-            
-            # 检查表是否存在
-            cursor.execute("SHOW TABLES LIKE 'copper_shock_data'")
-            if cursor.fetchone():
-                # 从 MySQL 导出数据
-                df = pd.read_sql("SELECT * FROM copper_shock_data", mysql_conn)
-                
-                # 导入到 SQLite
-                if not df.empty:
-                    df.to_sql('copper_shock_data', conn, index=False, if_exists='replace')
-                    st.success(f"成功从 MySQL 迁移 {len(df)} 条记录到 SQLite")
-                else:
-                    st.warning("MySQL 表中没有数据")
-            else:
-                st.warning("MySQL 中找不到 'copper_shock_data' 表")
-                
-    except ImportError:
-        st.warning("未安装 mysql-connector-python，跳过数据迁移。请手动导入数据或安装该库。")
-    except Error as e:
-        st.error(f"连接 MySQL 失败: {str(e)}")
-    except Exception as e:
-        st.error(f"数据迁移过程中出错: {str(e)}")
 
 # 初始化数据库
 init_database()
@@ -136,349 +92,607 @@ def save_results_to_db(results, material_name="Copper"):
     except Exception as e:
         st.error(f"保存到数据库失败: {str(e)}")
 
-# 冲击波计算函数
-def calculate_shock_wave(rho0, Us, Up_range=None, num_points=50):
-    """
-    计算冲击波参数
+def fit_material_data(df, material_name):
+    """对数据库中的材料数据进行拟合，返回最优参数"""
+    if df is None or df.empty:
+        st.warning(f"材料 '{material_name}' 没有数据")
+        return None
     
-    参数:
-    - rho0: 初始密度 (g/cm³)
-    - Us: 冲击波速度 (km/s)
-    - Up_range: 粒子速度范围 (km/s)，若为None则使用Us计算
-    - num_points: 计算点数
+    # 对D-u关系进行线性拟合 (D = C0 + λ*u)
+    X = df['Up'].values.reshape(-1, 1)
+    y = df['Us'].values
     
-    返回:
-    - 计算结果列表
-    """
-    results = []
+    model = LinearRegression()
+    model.fit(X, y)
     
-    # 如果没有提供Up范围，计算单个点
-    if Up_range is None:
-        # 计算冲击波后的参数
-        rh0f = rho0  # 初始流体密度
-        Df = Us      # 冲击波速度
-        uf = Up_range if Up_range is not None else 0.5 * Us  # 粒子速度
-        Pf = rho0 * Us * uf * 10  # 压力 (GPa)，乘以10是单位转换
-        V = rho0 / (rho0 + uf * rho0 / Us)  # 比容
-        rhf = 1 / V  # 最终密度
-        V_V0 = V / (1/rho0)  # 比容比
-        
-        results.append({
-            'rh0f': rh0f,
-            'Df': Df,
-            'uf': uf,
-            'Pf': Pf,
-            'V': V,
-            'rhf': rhf,
-            'V_V0': V_V0
-        })
-    else:
-        # 计算一系列点
-        Up_min, Up_max = Up_range
-        Up_values = np.linspace(Up_min, Up_max, num_points)
-        
-        for uf in Up_values:
-            # 计算冲击波后的参数
-            rh0f = rho0
-            Df = Us
-            Pf = rho0 * Us * uf * 10  # GPa
-            V = rho0 / (rho0 + uf * rho0 / Us)
-            rhf = 1 / V
-            V_V0 = V / (1/rho0)
-            
-            results.append({
-                'rh0f': rh0f,
-                'Df': Df,
-                'uf': uf,
-                'Pf': Pf,
-                'V': V,
-                'rhf': rhf,
-                'V_V0': V_V0
-            })
+    C0 = model.intercept_
+    lambda_val = model.coef_[0]
+    r2 = r2_score(y, model.predict(X))
     
-    return results
+    # 计算平均密度、压力等参数
+    avg_rho0 = df['rho0'].mean()
+    avg_P = df['P'].mean()
+    
+    st.info(f"{material_name} 拟合结果: D = {C0:.4f} + {lambda_val:.4f}*u (R² = {r2:.4f})")
+    st.info(f"{material_name} 平均参数: ρ₀ = {avg_rho0:.4f} g/cm³, P = {avg_P:.4f} GPa")
+    
+    return {
+        "C0": C0,
+        "lambda": lambda_val,
+        "rho0": avg_rho0,
+        "r2": r2
+    }
 
-# 计算Hugoniot曲线
-def calculate_hugoniot(rho0, c0, s, P_max=1000, num_points=100):
-    """
-    计算材料的Hugoniot曲线
+def get_input_streamlit(label, var_name, key, default=None):
+    """增强输入函数，支持默认值"""
+    input_type = st.radio(
+        f"{label} 输入类型",
+        ["单个值", "多个值(逗号分隔)", "范围(带可选步长)"],
+        key=f"{key}_type"
+    )
     
-    参数:
-    - rho0: 初始密度 (g/cm³)
-    - c0: 声速 (km/s)
-    - s: 冲击阻抗系数
-    - P_max: 最大压力 (GPa)
-    - num_points: 计算点数
+    default_val = str(default) if default is not None else ""
     
-    返回:
-    - Hugoniot曲线数据
-    """
-    P_values = np.linspace(0, P_max, num_points)
-    hugoniot_data = []
-    
-    for P in P_values:
-        if P == 0:
-            # 零压力点
-            V = 1/rho0
-            rho = rho0
-            Us = c0
-            Up = 0
-        else:
-            # 使用Rankine-Hugoniot关系计算
-            # P = rho0 * Us * Up
-            # Us = c0 + s * Up
-            # 联立方程解得:
-            a = rho0 * s**2
-            b = 2 * rho0 * c0 * s
-            c = rho0 * c0**2 - P/10  # 转换为km/s单位
+    if input_type == "单个值":
+        val = st.text_input(label, default_val, key=f"{key}_single")
+        if val == "":
+            return symbols(var_name)
+        try:
+            return [float(val)]
+        except ValueError:
+            st.error("请输入有效的数值")
+            return None
+    elif input_type == "多个值(逗号分隔)":
+        val = st.text_input(label, default_val, key=f"{key}_multi")
+        if val == "":
+            return symbols(var_name)
+        try:
+            return [float(x.strip()) for x in val.split(',')]
+        except ValueError:
+            st.error("请输入有效的逗号分隔数值")
+            return None
+    else:  # 范围
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            start = st.text_input(f"{label} 起始值", default_val, key=f"{key}_start")
+        with col2:
+            end = st.text_input(f"{label} 结束值", "", key=f"{key}_end")
+        with col3:
+            step = st.text_input(f"{label} 步长(可选)", "0.5", key=f"{key}_step")
             
-            # 解二次方程 a*Up^2 + b*Up + c = 0
-            discriminant = b**2 - 4*a*c
-            if discriminant < 0:
-                continue
-                
-            Up = (-b + np.sqrt(discriminant)) / (2*a)
-            Us = c0 + s * Up
-            V = 1/rho0 - Up*Us/(10*P)  # 比容，单位转换
-            rho = 1/V
+        if not start or not end:
+            return symbols(var_name)
             
-        hugoniot_data.append({
-            'P': P,
-            'V': V,
-            'rho': rho,
-            'Us': Us,
-            'Up': Up,
-            'V_V0': V / (1/rho0)
-        })
-    
-    return hugoniot_data
+        try:
+            start = float(start)
+            end = float(end)
+            step = float(step) if step else 0.5
+            
+            values = []
+            current = start
+            epsilon = 1e-9
+            while current <= end + epsilon:
+                values.append(round(current, 6))
+                current += step
+            return values
+        except ValueError:
+            st.error("请输入有效的范围数值")
+            return None
 
-# 绘制冲击波参数关系图
-def plot_shock_parameters(results, material_data=None):
-    """
-    绘制冲击波参数关系图
-    
-    参数:
-    - results: 计算结果列表
-    - material_data: 材料实验数据 (DataFrame)
-    """
+def plot_results_streamlit(results):
+    """绘制结果图表"""
     if not results:
         st.warning("没有数据可绘制")
         return
+        
+    fig = plt.figure(figsize=(18, 6))
     
-    # 提取计算数据
-    Us_values = [r['Df'] for r in results]
-    Up_values = [r['uf'] for r in results]
-    P_values = [r['Pf'] for r in results]
-    V_V0_values = [r['V_V0'] for r in results]
+    # 准备数据
+    pf_values = [r.get('Pf', 0) for r in results]
+    pb_values = [r.get('Pb', 0) for r in results]
+    ps_values = [r.get('Ps', 0) for r in results]
+    uf_values = [r.get('uf', 0) for r in results]
+    ub_values = [r.get('ub', 0) for r in results]
+    us_values = [r.get('us', 0) for r in results]
+    df_values = [r.get('Df', 0) for r in results]
+    db_values = [r.get('Db', 0) for r in results]
+    ds_values = [r.get('Ds', 0) for r in results]
+    rhf_values = [r.get('rhf', 0) for r in results]
+    rhb_values = [r.get('rhb', 0) for r in results]
+    rhs_values = [r.get('rhs', 0) for r in results]
     
-    # 创建两个图表
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-    
-    # 绘制 Us-Up 关系图
-    ax1.plot(Up_values, Us_values, 'b-', label='计算结果')
-    ax1.set_xlabel('粒子速度 $U_p$ (km/s)')
-    ax1.set_ylabel('冲击波速度 $U_s$ (km/s)')
-    ax1.set_title('冲击波速度 vs 粒子速度')
-    ax1.grid(True)
-    
-    # 如果有实验数据，添加到图中
-    if material_data is not None and not material_data.empty:
-        ax1.scatter(material_data['Up'], material_data['Us'], color='red', label='实验数据')
-    
-    ax1.legend()
-    
-    # 绘制 P-V/V0 关系图
-    ax2.plot(V_V0_values, P_values, 'g-', label='计算结果')
-    ax2.set_xlabel('比容比 $V/V_0$')
-    ax2.set_ylabel('压力 $P$ (GPa)')
-    ax2.set_title('Hugoniot曲线 (压力 vs 比容比)')
-    ax2.grid(True)
-    
-    # 如果有实验数据，添加到图中
-    if material_data is not None and not material_data.empty:
-        ax2.scatter(material_data['V_V0'], material_data['P'], color='red', label='实验数据')
-    
-    ax2.legend()
-    
-    # 使用工程单位格式化坐标轴
-    for ax in [ax1, ax2]:
-        formatter = EngFormatter(unit='')
-        ax.xaxis.set_major_formatter(formatter)
-        ax.yaxis.set_major_formatter(formatter)
-    
-    plt.tight_layout()
-    st.pyplot(fig)
-    
-    # 返回图表数据用于下载
-    return fig
+    # 通用拟合函数
+    def add_fit_curve(ax, x_data, y_data, color, label, deg=2):
+        try:
+            clean_x = [xi for xi, yi in zip(x_data, y_data) if isinstance(xi, (int, float)) and isinstance(yi, (int, float))]
+            clean_y = [yi for xi, yi in zip(x_data, y_data) if isinstance(xi, (int, float)) and isinstance(yi, (int, float))]
+            
+            if len(clean_x) < deg + 1:
+                return
+                
+            coeffs = np.polyfit(clean_x, clean_y, deg)
+            poly = np.poly1d(coeffs)
+            x_fit = np.linspace(min(clean_x), max(clean_x), 100)
+            y_fit = poly(x_fit)
+            
+            ax.plot(x_fit, y_fit, color=color, linestyle='--', linewidth=2, alpha=0.8, label=f'{label} 拟合')
+            
+        except Exception as e:
+            st.warning(f"拟合失败 ({label}): {str(e)}")
 
-# 主应用
-def main():
-    st.title("多物理场冲击波参数计算器")
+    # 1. P-V 图
+    ax1 = fig.add_subplot(131)
+    ax1.scatter(rhf_values, pf_values, c='blue', label='飞片', alpha=0.6)
+    ax1.scatter(rhb_values, pb_values, c='red', label='基板', alpha=0.6)
+    ax1.scatter(rhs_values, ps_values, c='green', label='样品', alpha=0.6)
+    add_fit_curve(ax1, rhf_values, pf_values, 'blue', '飞片')
+    add_fit_curve(ax1, rhb_values, pb_values, 'red', '基板')
+    add_fit_curve(ax1, rhs_values, ps_values, 'green', '样品')
+    ax1.set(xlabel='密度 (rh)', ylabel='压力 (P)', title='P-rh 图')
+    ax1.legend()
+
+    # 2. P-u 图
+    ax2 = fig.add_subplot(132)
+    ax2.scatter(uf_values, pf_values, c='blue', label='飞片', alpha=0.6)
+    ax2.scatter(ub_values, pb_values, c='red', label='基板', alpha=0.6)
+    ax2.scatter(us_values, ps_values, c='green', label='样品', alpha=0.6)
+    add_fit_curve(ax2, uf_values, pf_values, 'blue', '飞片')
+    add_fit_curve(ax2, ub_values, pb_values, 'red', '基板')
+    add_fit_curve(ax2, us_values, ps_values, 'green', '样品')
+    ax2.set(xlabel='速度 (u)', ylabel='压力 (P)', title='P-u 图')
+    ax2.legend()
+
+    # 3. D-u 图
+    ax3 = fig.add_subplot(133)
+    ax3.scatter(uf_values, df_values, c='blue', label='飞片', alpha=0.6)
+    ax3.scatter(ub_values, db_values, c='red', label='基板', alpha=0.6)
+    ax3.scatter(us_values, ds_values, c='green', label='样品', alpha=0.6)
+    add_fit_curve(ax3, uf_values, df_values, 'blue', '飞片')
+    add_fit_curve(ax3, ub_values, db_values, 'red', '基板')
+    add_fit_curve(ax3, us_values, ds_values, 'green', '样品')
+    ax3.set(xlabel='速度 (u)', ylabel='位移 (D)', title='D-u 图')
+    ax3.legend()
+
+    plt.tight_layout()
+    buf = BytesIO()
+    plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+    buf.seek(0)
+    img = Image.open(buf)
     
-    # 侧边栏 - 参数设置
-    st.sidebar.header("材料参数设置")
+    st.image(img, caption="分析结果图表")
     
-    # 选择材料或自定义
-    materials = get_all_materials()
-    material_selection = st.sidebar.selectbox(
-        "选择材料",
-        ["自定义"] + materials
+    # 提供下载
+    buf2 = BytesIO()
+    plt.savefig(buf2, format='png', dpi=300, bbox_inches='tight')
+    buf2.seek(0)
+    st.download_button(
+        label="下载图表",
+        data=buf2,
+        file_name="analysis_with_fit.png",
+        mime="image/png"
     )
     
-    if material_selection != "自定义":
-        # 从数据库加载材料参数
-        material_df = get_material_data(material_selection)
-        if not material_df.empty:
-            # 使用第一条记录作为默认参数
-            sample = material_df.iloc[0]
-            rho0_default = sample['rho0']
-            Us_default = sample['Us']
-            st.sidebar.info(f"从数据库加载材料: {material_selection}")
-        else:
-            rho0_default = 8.96  # 铜的密度 (g/cm³)
-            Us_default = 3.94    # 铜的典型冲击波速度 (km/s)
-            st.sidebar.warning(f"材料 '{material_selection}' 数据为空，使用默认值")
-    else:
-        # 自定义参数
-        rho0_default = 8.96  # 铜的密度 (g/cm³)
-        Us_default = 3.94    # 铜的典型冲击波速度 (km/s)
+    return fig
+
+def home_page():
+    """主页 - 选择模式"""
+    st.title("多物理场求解器")
+    st.write("选择你要使用的模式：")
     
-    # 输入参数
-    rho0 = st.sidebar.number_input("初始密度 ρ₀ (g/cm³)", min_value=0.1, value=rho0_default, step=0.1)
-    Us = st.sidebar.number_input("冲击波速度 Uₛ (km/s)", min_value=0.1, value=Us_default, step=0.1)
+    col1, col2 = st.columns(2)
     
-    # 计算模式
-    calc_mode = st.sidebar.radio("计算模式", ["单点计算", "参数扫描"])
+    with col1:
+        if st.button("使用数据库数据"):
+            st.session_state.page = "database_mode"
     
-    if calc_mode == "单点计算":
-        Up = st.sidebar.number_input("粒子速度 Uₚ (km/s)", min_value=0.0, value=Us/2, step=0.1)
-        num_points = 1
-    else:
-        Up_min = st.sidebar.number_input("最小粒子速度 Uₚ_min (km/s)", min_value=0.0, value=0.1, step=0.1)
-        Up_max = st.sidebar.number_input("最大粒子速度 Uₚ_max (km/s)", min_value=Up_min, value=Us, step=0.1)
-        num_points = st.sidebar.slider("计算点数", min_value=5, max_value=200, value=50, step=5)
-        Up_range = (Up_min, Up_max)
+    with col2:
+        if st.button("手动输入参数"):
+            st.session_state.page = "manual_mode"
+
+def database_mode_page():
+    """数据库模式页面"""
+    st.title("数据库模式")
+    st.write("从数据库加载材料的冲击波数据，拟合后选择最优参数")
     
-    # 计算按钮
-    if st.sidebar.button("计算"):
-        # 执行计算
-        if calc_mode == "单点计算":
-            results = calculate_shock_wave(rho0, Us, Up)
-        else:
-            results = calculate_shock_wave(rho0, Us, Up_range, num_points)
+    # 获取所有可用材料
+    materials = get_all_materials()
+    if not materials:
+        st.error("数据库中没有可用的材料数据")
+        return
+    
+    # 为飞片、基板和样品选择材料
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        flyer_material = st.selectbox("选择飞片材料", materials, key="flyer_material")
+    with col2:
+        base_material = st.selectbox("选择基板材料", materials, key="base_material")
+    with col3:
+        sample_material = st.selectbox("选择样品材料", materials, key="sample_material")
+    
+    # 加载所选材料的数据
+    flyer_df = get_material_data(flyer_material)
+    base_df = get_material_data(base_material)
+    sample_df = get_material_data(sample_material)
+    
+    # 拟合材料数据
+    with st.spinner(f"正在拟合 {flyer_material} 数据..."):
+        flyer_fit = fit_material_data(flyer_df, flyer_material)
+    
+    with st.spinner(f"正在拟合 {base_material} 数据..."):
+        base_fit = fit_material_data(base_df, base_material)
+    
+    with st.spinner(f"正在拟合 {sample_material} 数据..."):
+        sample_fit = fit_material_data(sample_df, sample_material)
+    
+    # 为输入字段提供拟合的参数作为默认值
+    default_params = {
+        "f": flyer_fit,
+        "b": base_fit,
+        "s": sample_fit
+    }
+    
+    # 参数输入
+    variables = {
+        "f": ["rh0f", "rhf", "Df", "C0f", "nubdaf", "E0f", "Ef", "uf", "w", "Pf"],
+        "b": ["rh0b", "rhb", "Db", "C0b", "nubdab", "E0b", "Eb", "ub", "Pb"],
+        "s": ["rh0s", "rhs", "Ds", "C0s", "nubdas", "E0s", "Es", "us", "Ps"]
+    }
+    
+    input_params = {}
+    sym_vars = {}
+    
+    # 飞片参数
+    with st.expander(f"{flyer_material} 飞片相关参数", expanded=True):
+        cols = st.columns(3)
+        for i, var in enumerate(variables["f"]):
+            with cols[i % 3]:
+                default_val = None
+                if default_params["f"] and var in ["rh0f", "C0f", "nubdaf"]:
+                    if var == "rh0f":
+                        default_val = default_params["f"]["rho0"]
+                    elif var == "C0f":
+                        default_val = default_params["f"]["C0"]
+                    elif var == "nubdaf":
+                        default_val = default_params["f"]["lambda"]
+                val = get_input_streamlit(f"{var}", var, f"f_{var}", default=default_val)
+                input_params[var] = val
+                sym_vars[var] = symbols(var)
+    
+    # 基板参数
+    with st.expander(f"{base_material} 基板相关参数", expanded=True):
+        cols = st.columns(3)
+        for i, var in enumerate(variables["b"]):
+            with cols[i % 3]:
+                default_val = None
+                if default_params["b"] and var in ["rh0b", "C0b", "nubdab"]:
+                    if var == "rh0b":
+                        default_val = default_params["b"]["rho0"]
+                    elif var == "C0b":
+                        default_val = default_params["b"]["C0"]
+                    elif var == "nubdab":
+                        default_val = default_params["b"]["lambda"]
+                val = get_input_streamlit(f"{var}", var, f"b_{var}", default=default_val)
+                input_params[var] = val
+                sym_vars[var] = symbols(var)
+    
+    # 样品参数
+    with st.expander(f"{sample_material} 样品相关参数", expanded=True):
+        cols = st.columns(3)
+        for i, var in enumerate(variables["s"]):
+            with cols[i % 3]:
+                default_val = None
+                if default_params["s"] and var in ["rh0s", "C0s", "nubdas"]:
+                    if var == "rh0s":
+                        default_val = default_params["s"]["rho0"]
+                    elif var == "C0s":
+                        default_val = default_params["s"]["C0"]
+                    elif var == "nubdas":
+                        default_val = default_params["s"]["lambda"]
+                val = get_input_streamlit(f"{var}", var, f"s_{var}", default=default_val)
+                input_params[var] = val
+                sym_vars[var] = symbols(var)
+    
+    # 求解按钮
+    if st.button("开始求解"):
+        # 检查输入
+        valid = True
+        for var, val in input_params.items():
+            if val is None:
+                valid = False
+                st.error(f"{var} 输入无效，请检查")
+        
+        if not valid:
+            return
+            
+        # 准备计算
+        range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
+        combinations = itertools.product(*[[(k, val) for val in v] for k, v in range_params.items()])
+        
+        results = []
+        progress_bar = st.progress(0)
+        total = len(list(itertools.product(*[v for v in range_params.values()]))) if range_params else 1
+        count = 0
+        
+        for combo in combinations:
+            count += 1
+            progress_bar.progress(count / total)
+            
+            current_subs = {sym_vars[k]: v for k, v in combo}
+            
+            # 方程定义
+            eqs = [
+                Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
+                Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
+                Eq(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*(sym_vars['w'] - sym_vars['uf']), 0),
+                Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*sym_vars['ub'], 0),
+                Eq(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
+                Eq(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
+                Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['nubdaf']*(sym_vars['w'] - sym_vars['uf']), 0),
+                Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['nubdab']*sym_vars['ub'], 0),
+                Eq(sym_vars['Pf'] - sym_vars['Pb'], 0),
+                Eq(sym_vars['uf'] - sym_vars['ub'], 0)
+            ]
+            
+            # 动态条件分支
+            try:
+                cond = all([
+                    current_subs.get(sym_vars['rh0s'], sym_vars['rh0s']) == current_subs.get(sym_vars['rh0b'], sym_vars['rh0b']),
+                    current_subs.get(sym_vars['C0b'], sym_vars['C0b']) == current_subs.get(sym_vars['C0s'], sym_vars['C0s']),
+                    current_subs.get(sym_vars['nubdab'], sym_vars['nubdab']) == current_subs.get(sym_vars['nubdas'], sym_vars['nubdas']),
+                    current_subs.get(sym_vars['E0b'], sym_vars['E0b']) == current_subs.get(sym_vars['E0s'], sym_vars['E0s'])
+                ])
+            except TypeError:
+                cond = False
+                
+            if cond:
+                eqs += [
+                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),
+                    Eq(sym_vars['ub'] - sym_vars['us'], 0),
+                    Eq(sym_vars['rhb'] - sym_vars['rhs'], 0),
+                    Eq(sym_vars['Db'] - sym_vars['Ds'], 0),
+                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0)
+                ]
+            else:
+                eqs += [
+                    Eq(sym_vars['rh0s']*sym_vars['Ds'] - sym_vars['rhb']*(sym_vars['Ds'] - sym_vars['us']), 0),
+                    Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*(2*sym_vars['ub'] - sym_vars['us']), 0),
+                    Eq(sym_vars['Ps'] - sym_vars['rh0s']*sym_vars['Ds']*sym_vars['us'], 0),
+                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0),
+                    Eq(sym_vars['Ds'] - sym_vars['C0s'] - sym_vars['nubdas']*sym_vars['us'], 0),
+                    Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['nubdab']*(2*sym_vars['ub'] - sym_vars['us']), 0),
+                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),
+                    Eq(sym_vars['ub'] - sym_vars['us'], 0)
+                ]
+            
+            substituted_eqs = [eq.subs(current_subs) for eq in eqs]
+            remaining_vars = list(set().union(*[eq.free_symbols for eq in substituted_eqs]))
+            
+            try:
+                solutions = solve(substituted_eqs, remaining_vars, dict=True)
+                if solutions:
+                    for sol in solutions:
+                        record = {str(k): float(v) for k, v in sol.items()}
+                        record.update({str(k): float(v) for k, v in current_subs.items()})
+                        # 记录材料信息
+                        record['flyer_material'] = flyer_material
+                        record['base_material'] = base_material
+                        record['sample_material'] = sample_material
+                        results.append(record)
+            except Exception as e:
+                st.warning(f"求解错误: {str(e)}")
         
         if results:
-            # 显示计算结果
-            st.subheader("计算结果")
+            st.success(f"求解完成，共找到 {len(results)} 个解")
             
-            # 显示单点结果或统计信息
-            if len(results) == 1:
-                result = results[0]
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("密度 ρ", f"{result['rhf']:.3f} g/cm³")
-                    st.metric("压力 P", f"{result['Pf']:.3f} GPa")
-                with col2:
-                    st.metric("冲击波速度 Uₛ", f"{result['Df']:.3f} km/s")
-                    st.metric("粒子速度 Uₚ", f"{result['uf']:.3f} km/s")
-                with col3:
-                    st.metric("比容 V", f"{result['V']:.6f} cm³/g")
-                    st.metric("比容比 V/V₀", f"{result['V_V0']:.6f}")
-            else:
-                # 转换为DataFrame并显示统计信息
-                df = pd.DataFrame(results)
-                st.dataframe(df.describe().round(3))
-                
-                # 保存结果到数据库
-                if st.button("保存计算结果到数据库"):
-                    save_results_to_db(results, material_selection if material_selection != "自定义" else "Custom")
+            # 显示结果表格
+            st.subheader("结果数据")
+            df = pd.DataFrame(results)
+            st.dataframe(df)
             
-            # 绘制图表
-            material_data = get_material_data(material_selection) if material_selection != "自定义" else None
-            fig = plot_shock_parameters(results, material_data)
-            
-            # 下载图表
-            buf = BytesIO()
-            fig.savefig(buf, format="png")
+            # 提供数据下载
+            csv = df.to_csv(index=False)
             st.download_button(
-                label="下载图表",
-                data=buf,
-                file_name=f"shock_wave_{material_selection}.png",
-                mime="image/png"
+                label="下载结果数据",
+                data=csv,
+                file_name="solver_results.csv",
+                mime="text/csv",
             )
             
-            # 下载数据
-            if len(results) > 1:
-                csv_data = df.to_csv(sep='\t', na_rep='nan')
-                st.download_button(
-                    label="下载数据",
-                    data=csv_data,
-                    file_name=f"shock_wave_data_{material_selection}.txt",
-                    mime="text/plain"
-                )
+            # 绘制图表
+            st.subheader("结果可视化")
+            plot_results_streamlit(results)
+            
+            # 保存到数据库选项
+            st.subheader("保存结果")
+            if st.button("保存结果到数据库"):
+                # 使用主要材料名称（样品材料）作为保存的材料名称
+                save_results_to_db(results, sample_material)
+        else:
+            st.warning("未找到有效解")
     
-    # 显示数据库中的材料数据
-    st.subheader("材料数据库")
-    if materials:
-        selected_material = st.selectbox("查看材料数据", materials)
-        if st.button("加载材料数据"):
-            material_df = get_material_data(selected_material)
-            if not material_df.empty:
-                st.dataframe(material_df)
+    # 返回主页按钮
+    if st.button("返回主页"):
+        st.session_state.page = "home"
+
+def manual_mode_page():
+    """手动输入模式页面"""
+    st.title("手动输入模式")
+    st.write("所有参数由用户输入，计算后可选择保存结果到数据库")
+    
+    # 参数输入（无默认值）
+    variables = {
+        "f": ["rh0f", "rhf", "Df", "C0f", "nubdaf", "E0f", "Ef", "uf", "w", "Pf"],
+        "b": ["rh0b", "rhb", "Db", "C0b", "nubdab", "E0b", "Eb", "ub", "Pb"],
+        "s": ["rh0s", "rhs", "Ds", "C0s", "nubdas", "E0s", "Es", "us", "Ps"]
+    }
+    
+    input_params = {}
+    sym_vars = {}
+    
+    # 飞片参数
+    with st.expander("飞片相关参数", expanded=True):
+        cols = st.columns(3)
+        for i, var in enumerate(variables["f"]):
+            with cols[i % 3]:
+                val = get_input_streamlit(f"{var}", var, var)
+                input_params[var] = val
+                sym_vars[var] = symbols(var)
+    
+    # 基板参数
+    with st.expander("基板相关参数", expanded=True):
+        cols = st.columns(3)
+        for i, var in enumerate(variables["b"]):
+            with cols[i % 3]:
+                val = get_input_streamlit(f"{var}", var, var)
+                input_params[var] = val
+                sym_vars[var] = symbols(var)
+    
+    # 样品参数
+    with st.expander("样品相关参数", expanded=True):
+        cols = st.columns(3)
+        for i, var in enumerate(variables["s"]):
+            with cols[i % 3]:
+                val = get_input_streamlit(f"{var}", var, var)
+                input_params[var] = val
+                sym_vars[var] = symbols(var)
+    
+    # 求解按钮
+    if st.button("开始求解"):
+        # 检查输入
+        valid = True
+        for var, val in input_params.items():
+            if val is None:
+                valid = False
+                st.error(f"{var} 输入无效，请检查")
+        
+        if not valid:
+            return
+            
+        # 准备计算
+        range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
+        combinations = itertools.product(*[[(k, val) for val in v] for k, v in range_params.items()])
+        
+        results = []
+        progress_bar = st.progress(0)
+        total = len(list(itertools.product(*[v for v in range_params.values()]))) if range_params else 1
+        count = 0
+        
+        for combo in combinations:
+            count += 1
+            progress_bar.progress(count / total)
+            
+            current_subs = {sym_vars[k]: v for k, v in combo}
+            
+            # 方程定义
+            eqs = [
+                Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
+                Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
+                Eq(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*(sym_vars['w'] - sym_vars['uf']), 0),
+                Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*sym_vars['ub'], 0),
+                Eq(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
+                Eq(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
+                Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['nubdaf']*(sym_vars['w'] - sym_vars['uf']), 0),
+                Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['nubdab']*sym_vars['ub'], 0),
+                Eq(sym_vars['Pf'] - sym_vars['Pb'], 0),
+                Eq(sym_vars['uf'] - sym_vars['ub'], 0)
+            ]
+            
+            # 动态条件分支
+            try:
+                cond = all([
+                    current_subs.get(sym_vars['rh0s'], sym_vars['rh0s']) == current_subs.get(sym_vars['rh0b'], sym_vars['rh0b']),
+                    current_subs.get(sym_vars['C0b'], sym_vars['C0b']) == current_subs.get(sym_vars['C0s'], sym_vars['C0s']),
+                    current_subs.get(sym_vars['nubdab'], sym_vars['nubdab']) == current_subs.get(sym_vars['nubdas'], sym_vars['nubdas']),
+                    current_subs.get(sym_vars['E0b'], sym_vars['E0b']) == current_subs.get(sym_vars['E0s'], sym_vars['E0s'])
+                ])
+            except TypeError:
+                cond = False
                 
-                # 计算并显示Hugoniot曲线
-                st.subheader(f"{selected_material} 的 Hugoniot 曲线")
-                
-                # 从数据中估计Hugoniot参数 (Us = c0 + s*Up)
-                if len(material_df) >= 2:
-                    # 线性拟合 Us-Up 关系
-                    x = material_df['Up'].values
-                    y = material_df['Us'].values
-                    s, c0 = np.polyfit(x, y, 1)
-                    
-                    st.info(f"Hugoniot参数估计: c₀ = {c0:.3f} km/s, s = {s:.3f}")
-                    
-                    # 计算Hugoniot曲线
-                    hugoniot_data = calculate_hugoniot(rho0, c0, s)
-                    hugoniot_df = pd.DataFrame(hugoniot_data)
-                    
-                    # 绘制Hugoniot曲线
-                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-                    
-                    # Us-Up 关系
-                    ax1.plot(hugoniot_df['Up'], hugoniot_df['Us'], 'b-', label='Hugoniot曲线')
-                    ax1.scatter(material_df['Up'], material_df['Us'], color='red', label='实验数据')
-                    ax1.set_xlabel('粒子速度 $U_p$ (km/s)')
-                    ax1.set_ylabel('冲击波速度 $U_s$ (km/s)')
-                    ax1.set_title('冲击波速度 vs 粒子速度')
-                    ax1.grid(True)
-                    ax1.legend()
-                    
-                    # P-V/V0 关系
-                    ax2.plot(hugoniot_df['V_V0'], hugoniot_df['P'], 'g-', label='Hugoniot曲线')
-                    ax2.scatter(material_df['V_V0'], material_df['P'], color='red', label='实验数据')
-                    ax2.set_xlabel('比容比 $V/V_0$')
-                    ax2.set_ylabel('压力 $P$ (GPa)')
-                    ax2.set_title('Hugoniot曲线 (压力 vs 比容比)')
-                    ax2.grid(True)
-                    ax2.legend()
-                    
-                    # 使用工程单位格式化坐标轴
-                    for ax in [ax1, ax2]:
-                        formatter = EngFormatter(unit='')
-                        ax.xaxis.set_major_formatter(formatter)
-                        ax.yaxis.set_major_formatter(formatter)
-                    
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                else:
-                    st.warning("数据点不足，无法计算Hugoniot曲线")
+            if cond:
+                eqs += [
+                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),
+                    Eq(sym_vars['ub'] - sym_vars['us'], 0),
+                    Eq(sym_vars['rhb'] - sym_vars['rhs'], 0),
+                    Eq(sym_vars['Db'] - sym_vars['Ds'], 0),
+                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0)
+                ]
             else:
-                st.warning(f"材料 '{selected_material}' 没有数据")
-    else:
-        st.info("数据库中没有材料数据")
+                eqs += [
+                    Eq(sym_vars['rh0s']*sym_vars['Ds'] - sym_vars['rhb']*(sym_vars['Ds'] - sym_vars['us']), 0),
+                    Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*(2*sym_vars['ub'] - sym_vars['us']), 0),
+                    Eq(sym_vars['Ps'] - sym_vars['rh0s']*sym_vars['Ds']*sym_vars['us'], 0),
+                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0),
+                    Eq(sym_vars['Ds'] - sym_vars['C0s'] - sym_vars['nubdas']*sym_vars['us'], 0),
+                    Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['nubdab']*(2*sym_vars['ub'] - sym_vars['us']), 0),
+                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),
+                    Eq(sym_vars['ub'] - sym_vars['us'], 0)
+                ]
+            
+            substituted_eqs = [eq.subs(current_subs) for eq in eqs]
+            remaining_vars = list(set().union(*[eq.free_symbols for eq in substituted_eqs]))
+            
+            try:
+                solutions = solve(substituted_eqs, remaining_vars, dict=True)
+                if solutions:
+                    for sol in solutions:
+                        record = {str(k): float(v) for k, v in sol.items()}
+                        record.update({str(k): float(v) for k, v in current_subs.items()})
+                        results.append(record)
+            except Exception as e:
+                st.warning(f"求解错误: {str(e)}")
+        
+        if results:
+            st.success(f"求解完成，共找到 {len(results)} 个解")
+            
+            # 显示结果表格
+            st.subheader("结果数据")
+            df = pd.DataFrame(results)
+            st.dataframe(df)
+            
+            # 提供数据下载
+            csv = df.to_csv(index=False)
+            st.download_button(
+                label="下载结果数据",
+                data=csv,
+                file_name="solver_results.csv",
+                mime="text/csv",
+            )
+            
+            # 绘制图表
+            st.subheader("结果可视化")
+            plot_results_streamlit(results)
+            
+            # 保存到数据库选项
+            st.subheader("保存结果")
+            if st.button("保存结果到数据库"):
+                save_results_to_db(results, "Custom Material")
+        else:
+            st.warning("未找到有效解")
+    
+    # 返回主页按钮
+    if st.button("返回主页"):
+        st.session_state.page = "home"
+
+def main():
+    """主应用函数"""
+    # 初始化会话状态
+    if 'page' not in st.session_state:
+        st.session_state.page = "home"
+    
+    # 设置页面配置
+    st.set_page_config(
+        page_title="多物理场求解器",
+        page_icon="✨",
+        layout="wide"
+    )
+    
+    # 页面导航
+    if st.session_state.page == "home":
+        home_page()
+    elif st.session_state.page == "database_mode":
+        database_mode_page()
+    elif st.session_state.page == "manual_mode":
+        manual_mode_page()
 
 if __name__ == "__main__":
     main()
