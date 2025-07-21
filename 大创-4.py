@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import EngFormatter
-import sympy as sp
+from sympy import symbols, Eq, solve
 from io import BytesIO
 from PIL import Image
 import itertools
