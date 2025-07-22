@@ -10,3 +10,4 @@ cycler>=0.10
 pyparsing>=3.0.7
 python-dateutil>=2.7
 pillow>=10.0.0  # 升级到兼容版本
+sqlalchemy==2.0.25
