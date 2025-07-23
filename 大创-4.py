@@ -29,13 +29,13 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor.execute('PRAGMA temp_store=MEMORY;')   # 临时存储
     cursor.close()
 
-# 初始化数据库 - 使用统一表名shock_wave_data
+# 初始化数据库 - 表名修改为shock_wave_all_data
 def init_database():
     try:
         with sqlite_engine.connect() as conn:
-            if not conn.dialect.has_table(conn, 'shock_wave_data'):
+            if not conn.dialect.has_table(conn, 'shock_wave_all_data'):
                 conn.execute(text("""
-                    CREATE TABLE shock_wave_data (
+                    CREATE TABLE shock_wave_all_data (
                         id INTEGER PRIMARY KEY,
                         material TEXT,
                         rho0 REAL,       -- 初始密度 (g/cm³)
@@ -56,10 +56,10 @@ def init_database():
 
 init_database()
 
-# 数据库操作函数 - 统一使用shock_wave_data表
+# 数据库操作函数 - 统一使用shock_wave_all_data表
 def get_all_materials():
     try:
-        query = text("SELECT DISTINCT material FROM shock_wave_data")
+        query = text("SELECT DISTINCT material FROM shock_wave_all_data")
         with sqlite_engine.connect() as conn:
             df = pd.read_sql(query, conn)
         return df['material'].tolist()
@@ -69,7 +69,7 @@ def get_all_materials():
 
 def get_material_data(material_name):
     try:
-        query = text("SELECT * FROM shock_wave_data WHERE material = :material")
+        query = text("SELECT * FROM shock_wave_all_data WHERE material = :material")
         with sqlite_engine.connect() as conn:
             df = pd.read_sql(query, conn, params={'material': material_name})
         return df
@@ -99,7 +99,7 @@ def save_results_to_db(results, material_name="Copper"):
                     'T': result.get('T', 0)
                 }
                 stmt = text("""
-                    INSERT INTO shock_wave_data 
+                    INSERT INTO shock_wave_all_data 
                     (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T) 
                     VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
                 """)
@@ -125,7 +125,7 @@ def save_input_data_to_db(input_data, material_name, exp_method="manual_input"):
                 'T': input_data.get('T', 0)
             }
             stmt = text("""
-                INSERT INTO shock_wave_data 
+                INSERT INTO shock_wave_all_data 
                 (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T) 
                 VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
             """)
@@ -795,7 +795,7 @@ def manual_mode_page():
             
             calculation_result = {
                 'rho0': rho0, 'Us': U_s, 'Up': u_p, 
-                'P': P, 'V': V, 'rho': rho, 'V_V0': V_V0, 'V_V0': V_V0,
+                'P': P, 'V': V, 'rho': rho, 'V_V0': V_V0,
                 'gamma': gamma, 'T': T,
                 'P_err': error_params['P_err'],
                 'Us_err': error_params['Us_err'],
@@ -1055,4 +1055,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
