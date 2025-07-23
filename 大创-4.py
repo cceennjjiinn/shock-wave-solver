@@ -104,6 +104,31 @@ def save_results_to_db(results, material_name="Copper"):
     except Exception as e:
         st.error(f"保存失败: {str(e)}")
 
+# 新增：保存输入数据到数据库的函数
+def save_input_data_to_db(input_data, material_name, exp_method="manual_input"):
+    try:
+        with sqlite_engine.begin() as conn:
+            data = {
+                'material': material_name,
+                'rho0': input_data.get('rho0', 0),
+                'Us': input_data.get('Us', 0),
+                'Up': input_data.get('Up', 0),
+                'P': input_data.get('P', 0),
+                'V': input_data.get('V', 0),
+                'rho': input_data.get('rho', 0),
+                'V_V0': input_data.get('V_V0', 0),
+                'exp_method': exp_method
+            }
+            stmt = text("""
+                INSERT INTO copper_shock_data 
+                (material, rho0, Us, Up, P, V, rho, V_V0, exp_method) 
+                VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method)
+            """)
+            conn.execute(stmt, data)
+        st.success(f"成功保存输入数据到数据库 (材料: {material_name})")
+    except Exception as e:
+        st.error(f"保存输入数据失败: {str(e)}")
+
 # 冲击波参数快速计算（带物理说明）
 def calculate_shock_parameters(U_s, u_p, rho0):
     """
@@ -509,7 +534,7 @@ def database_mode_page():
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
     
-    # 基板和样品参数（类似增强说明，略去重复代码）
+    # 基板和样品参数（类似增强说明）
     with st.expander(f"{base_material} 基板参数", expanded=True):
         cols = st.columns(3)
         for i, var in enumerate(variables["b"]):
@@ -626,7 +651,6 @@ def database_mode_page():
             
             # 动态条件分支（明确假设）
             try:
-                # 判断样品与基板是否为同种材料（参数相同）
                 cond = all([
                     current_subs.get(sym_vars['rh0s'], sym_vars['rh0s']) == current_subs.get(sym_vars['rh0b'], sym_vars['rh0b']),
                     current_subs.get(sym_vars['C0b'], sym_vars['C0b']) == current_subs.get(sym_vars['C0s'], sym_vars['C0s']),
@@ -711,6 +735,13 @@ def manual_mode_page():
     st.title("手动输入模式")
     st.write("手动输入参数求解，适用于无数据库数据的场景")
     
+    # 新增：材料名称输入
+    col1, col2 = st.columns(2)
+    with col1:
+        material_name = st.text_input("材料名称", value="Copper", help="输入材料名称，如Copper、Aluminum等")
+    with col2:
+        exp_method = st.text_input("实验方法/数据来源", value="manual_input", help="记录数据来源，如实验设备、文献等")
+    
     # 冲击波参数快速计算（带详细说明）
     st.subheader("冲击波参数快速计算")
     st.caption("""
@@ -728,18 +759,21 @@ def manual_mode_page():
     
     rho0 = st.number_input("初始密度 ρ0 (g/cm³)", min_value=0.01, value=8.96, help="如铜的初始密度约8.96 g/cm³")
     
+    # 存储计算结果用于保存
+    calculation_result = None
+    
     if st.button("计算冲击波参数"):
         if U_s <= u_p:
             st.error("物理参数错误：冲击波速度Us必须大于粒子速度Up")
         else:
             P, V, rho, V_V0 = calculate_shock_parameters(U_s, u_p, rho0)
-            result = {
-                'rh0f': rho0,
-                'Df': U_s,
-                'uf': u_p,
-                'Pf': P,
+            calculation_result = {
+                'rho0': rho0,
+                'Us': U_s,
+                'Up': u_p,
+                'P': P,
                 'V': V,
-                'rhf': rho,
+                'rho': rho,
                 'V_V0': V_V0
             }
             st.success(f"""
@@ -750,7 +784,12 @@ def manual_mode_page():
             - 比容比 V/V0 = {V_V0:.4f}
             """)
     
-    # 参数输入（同数据库模式，略去重复说明）
+    # 新增：保存输入数据到数据库的按钮
+    if calculation_result:
+        if st.button("保存输入数据到数据库"):
+            save_input_data_to_db(calculation_result, material_name, exp_method)
+    
+    # 参数输入（同数据库模式）
     variables = {
         "f": ["rh0f", "rhf", "Df", "C0f", "nubdaf", "E0f", "Ef", "uf", "w", "Pf"],
         "b": ["rh0b", "rhb", "Db", "C0b", "nubdab", "E0b", "Eb", "ub", "Pb"],
@@ -785,7 +824,7 @@ def manual_mode_page():
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
     
-    # 基板和样品参数输入（略去重复代码）
+    # 基板和样品参数输入
     with st.expander("基板参数", expanded=True):
         cols = st.columns(3)
         for i, var in enumerate(variables["b"]):
@@ -869,7 +908,7 @@ def manual_mode_page():
             except:
                 pass
             
-            # 方程组定义（同数据库模式，略去重复代码）
+            # 方程组定义
             eqs = [
                 Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
                 Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
@@ -944,8 +983,9 @@ def manual_mode_page():
             st.subheader("结果可视化")
             plot_results_streamlit(results)
             
-            if st.button("保存结果到数据库"):
-                save_results_to_db(results, "Custom Material")
+            # 新增：保存计算结果到数据库的选项
+            if st.button("保存计算结果到数据库"):
+                save_results_to_db(results, material_name)
         else:
             st.warning("未找到有效解（请检查参数是否符合物理规律，如冲击波速度>粒子速度）")
     
