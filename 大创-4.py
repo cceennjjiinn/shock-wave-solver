@@ -56,7 +56,7 @@ def init_database():
 
 init_database()
 
-# 数据库操作函数 - 修复：添加get_all_materials函数
+# 数据库操作函数
 def get_all_materials():
     try:
         query = text("SELECT DISTINCT material FROM copper_shock_data")
@@ -401,7 +401,7 @@ def plot_results_streamlit(results):
     
     return fig
 
-# 页面函数（保持初始页面文字不变）
+# 页面函数
 def home_page():
     st.title("冲击波参数计算与分析系统")
     st.info("""
@@ -659,6 +659,7 @@ def database_mode_page():
             ]
             
             try:
+                # 修复语法错误：将current0b'修正为正确的current_subs.get(sym_vars['E0b']
                 cond = all([
                     current_subs.get(sym_vars['rh0s'], sym_vars['rh0s']) == current_subs.get(sym_vars['rh0b'], sym_vars['rh0b']),
                     current_subs.get(sym_vars['C0b'], sym_vars['C0b']) == current_subs.get(sym_vars['C0s'], sym_vars['C0s']),
@@ -964,11 +965,12 @@ def manual_mode_page():
             ]
             
             try:
+                # 修复语法错误：将current0b'修正为正确的current_subs.get(sym_vars['E0b']
                 cond = all([
                     current_subs.get(sym_vars['rh0s'], sym_vars['rh0s']) == current_subs.get(sym_vars['rh0b'], sym_vars['rh0b']),
                     current_subs.get(sym_vars['C0b'], sym_vars['C0b']) == current_subs.get(sym_vars['C0s'], sym_vars['C0s']),
                     current_subs.get(sym_vars['nubdab'], sym_vars['nubdab']) == current_subs.get(sym_vars['nubdas'], sym_vars['nubdas']),
-                    current_subs.get(sym_vars['E0b'], sym_vars['E0b']) == current0b'], sym_vars['E0b']) == current_subs.get(sym_vars['E0s'], sym_vars['E0s'])
+                    current_subs.get(sym_vars['E0b'], sym_vars['E0b']) == current_subs.get(sym_vars['E0s'], sym_vars['E0s'])
                 ])
             except TypeError:
                 cond = False
@@ -1053,3 +1055,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
