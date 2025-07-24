@@ -13,8 +13,30 @@ import itertools
 import os
 
 # 设置中文字体
-plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
-plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
+# 确保中文显示正常（关键修改）
+def set_chinese_font():
+    # 尝试使用系统中已有的中文字体
+    available_fonts = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC", "Microsoft YaHei", "KaiTi"]
+    font_found = False
+    
+    for font in available_fonts:
+        try:
+            # 检查字体是否可用
+            matplotlib.font_manager.findfont(font)
+            plt.rcParams["font.family"] = [font]
+            font_found = True
+            break
+        except:
+            continue
+    
+    if not font_found:
+        # 如果没有找到可用的中文字体，使用默认字体并警告
+        st.warning("未找到中文字体，可能无法正确显示中文标签")
+        plt.rcParams["font.family"] = ["sans-serif"]
+    
+    plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
+
+set_chinese_font()
 
 # 创建SQLite引擎
 sqlite_path = os.path.abspath('shock_wave_data.db')
