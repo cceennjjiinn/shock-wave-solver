@@ -1009,6 +1009,7 @@ def manual_mode_page():
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
+                sym_vars[var] = symbols(var)
     
     # 参数组合限制
     range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
@@ -1102,15 +1103,20 @@ def manual_mode_page():
                 ]
             else:
                 eqs += [
+                    # 样品质量守恒
                     Eq(sym_vars['rh0s']*sym_vars['Ds'] - sym_vars['rhb']*(sym_vars['Ds'] - sym_vars['us']), 0),
-                    Eq(sym_vars
+                    # 基板-样品界面动量守恒
                     Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*(2*sym_vars['ub'] - sym_vars['us']), 0),
+                    # 样品动量守恒
                     Eq(sym_vars['Ps'] - sym_vars['rh0s']*sym_vars['Ds']*sym_vars['us'], 0),
+                    # 样品能量守恒
                     Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0),
+                    # 样品Hugoniot关系
                     Eq(sym_vars['Ds'] - sym_vars['C0s'] - sym_vars['nubdas']*sym_vars['us'], 0),
+                    # 基板-样品界面Hugoniot关系
                     Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['nubdab']*(2*sym_vars['ub'] - sym_vars['us']), 0),
-                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),
-                    Eq(sym_vars['ub'] - sym_vars['us'], 0)
+                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),  # 压力连续
+                    Eq(sym_vars['ub'] - sym_vars['us'], 0)   # 速度连续
                 ]
             
             substituted_eqs = [eq.subs(current_subs) for eq in eqs]
