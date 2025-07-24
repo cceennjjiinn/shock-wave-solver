@@ -12,9 +12,8 @@ from PIL import Image
 import itertools
 import os
 
-# 设置中文字体
-# 设置中文字体
-plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
+# 设置中文字体（保留界面中文显示）
+plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC", "Arial"]
 plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
 
 # 创建SQLite引擎
@@ -272,45 +271,45 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc=""):
             st.error("请输入有效的范围数值")
             return None
 
-# 冲击波关系图
+# 冲击波关系图（仅此处中文替换为英文）
 def generate_shock_plots(df, C0, S):
     fig, axs = plt.subplots(2, 2, figsize=(12, 10))
     
     # Us vs Up
-    axs[0, 0].scatter(df['Up'], df['Us'], label='实验数据')
+    axs[0, 0].scatter(df['Up'], df['Us'], label='Experimental data')
     u_p_range = np.linspace(0, df['Up'].max()*1.1, 100)
     U_s_fit = C0 + S * u_p_range
-    axs[0, 0].plot(u_p_range, U_s_fit, 'r-', label=f'拟合: Us = {C0:.2f} + {S:.2f}·Up')
-    axs[0, 0].set_xlabel('粒子速度 Up (km/s)')
-    axs[0, 0].set_ylabel('冲击波速度 Us (km/s)')
+    axs[0, 0].plot(u_p_range, U_s_fit, 'r-', label=f'Fit: Us = {C0:.2f} + {S:.2f}·Up')
+    axs[0, 0].set_xlabel('Particle velocity Up (km/s)')
+    axs[0, 0].set_ylabel('Shock wave velocity Us (km/s)')
     axs[0, 0].legend()
     axs[0, 0].grid(True)
     
     # P vs Up
-    axs[0, 1].scatter(df['Up'], df['P'], label='实验数据')
+    axs[0, 1].scatter(df['Up'], df['P'], label='Experimental data')
     rho0 = df['rho0'].iloc[0] if not df.empty else 8.96
     P_range = rho0 * U_s_fit * u_p_range  # P = rho0 * Us * Up
-    axs[0, 1].plot(u_p_range, P_range, 'r-', label='理论曲线: P = ρ0·Us·Up')
-    axs[0, 1].set_xlabel('粒子速度 Up (km/s)')
-    axs[0, 1].set_ylabel('压力 P (GPa)')
+    axs[0, 1].plot(u_p_range, P_range, 'r-', label='Theoretical curve: P = ρ0·Us·Up')
+    axs[0, 1].set_xlabel('Particle velocity Up (km/s)')
+    axs[0, 1].set_ylabel('Pressure P (GPa)')
     axs[0, 1].legend()
     axs[0, 1].grid(True)
     
     # P vs V/V0
-    axs[1, 0].scatter(df['V_V0'], df['P'], label='实验数据')
+    axs[1, 0].scatter(df['V_V0'], df['P'], label='Experimental data')
     V_V0_range = 1 - u_p_range / U_s_fit  # V/V0 = 1 - Up/Us
-    axs[1, 0].plot(V_V0_range, P_range, 'r-', label='理论曲线')
-    axs[1, 0].set_xlabel('比容比 V/V0')
-    axs[1, 0].set_ylabel('压力 P (GPa)')
+    axs[1, 0].plot(V_V0_range, P_range, 'r-', label='Theoretical curve')
+    axs[1, 0].set_xlabel('Specific volume ratio V/V0')
+    axs[1, 0].set_ylabel('Pressure P (GPa)')
     axs[1, 0].legend()
     axs[1, 0].grid(True)
     
     # rho vs P
-    axs[1, 1].scatter(df['P'], df['rho'], label='实验数据')
+    axs[1, 1].scatter(df['P'], df['rho'], label='Experimental data')
     rho_range = rho0 * U_s_fit / (U_s_fit - u_p_range)  # rho = rho0·Us/(Us-Up)
-    axs[1, 1].plot(P_range, rho_range, 'r-', label='理论曲线')
-    axs[1, 1].set_xlabel('压力 P (GPa)')
-    axs[1, 1].set_ylabel('密度 ρ (g/cm³)')
+    axs[1, 1].plot(P_range, rho_range, 'r-', label='Theoretical curve')
+    axs[1, 1].set_xlabel('Pressure P (GPa)')
+    axs[1, 1].set_ylabel('Density ρ (g/cm³)')
     axs[1, 1].legend()
     axs[1, 1].grid(True)
     
@@ -323,7 +322,7 @@ def save_plot_to_bytes(fig):
     buf.seek(0)
     return buf
 
-# 绘图函数（含温度和误差）
+# 绘图函数（仅图像中中文替换为英文）
 def plot_results_streamlit(results):
     if not results:
         st.warning("没有数据可绘制")
@@ -347,37 +346,37 @@ def plot_results_streamlit(results):
     ax1.errorbar(uf_values, pf_values, 
                  yerr=[r.get('Pf_err', 0.1) for r in results],  # 压力误差
                  xerr=[r.get('uf_err', 0.05) for r in results], # 粒子速度误差
-                 fmt='bo', ecolor='r', capsize=5, label='飞片数据')
-    ax1.set_xlabel('粒子速度 Up (km/s)')
-    ax1.set_ylabel('冲击压力 P (GPa)')
-    ax1.set_title('压力-粒子速度关系（含误差范围）')
+                 fmt='bo', ecolor='r', capsize=5, label='Flyer data')
+    ax1.set_xlabel('Particle velocity Up (km/s)')
+    ax1.set_ylabel('Shock pressure P (GPa)')
+    ax1.set_title('Pressure-particle velocity relationship (with error range)')
     ax1.legend()
     ax1.grid(True)
     
     # 2. 温度-压力图（新增）
     ax2 = fig.add_subplot(222)
-    ax2.scatter(pf_values, tf_values, c='orange', label='飞片温度')
-    ax2.set_xlabel('冲击压力 P (GPa)')
-    ax2.set_ylabel('冲击温度 T (K)')
-    ax2.set_title('温度-压力关系')
+    ax2.scatter(pf_values, tf_values, c='orange', label='Flyer temperature')
+    ax2.set_xlabel('Shock pressure P (GPa)')
+    ax2.set_ylabel('Shock temperature T (K)')
+    ax2.set_title('Temperature-pressure relationship')
     ax2.legend()
     ax2.grid(True)
     
     # 3. 冲击波速度-粒子速度图
     ax3 = fig.add_subplot(223)
-    ax3.scatter(uf_values, df_values, c='blue', label='飞片')
-    ax3.set_xlabel('粒子速度 Up (km/s)')
-    ax3.set_ylabel('冲击波速度 Us (km/s)')
-    ax3.set_title('冲击波速度-粒子速度关系')
+    ax3.scatter(uf_values, df_values, c='blue', label='Flyer')
+    ax3.set_xlabel('Particle velocity Up (km/s)')
+    ax3.set_ylabel('Shock wave velocity Us (km/s)')
+    ax3.set_title('Shock wave velocity-particle velocity relationship')
     ax3.legend()
     ax3.grid(True)
     
     # 4. 密度-压力图
     ax4 = fig.add_subplot(224)
-    ax4.scatter(pf_values, rhf_values, c='green', label='飞片')
-    ax4.set_xlabel('冲击压力 P (GPa)')
-    ax4.set_ylabel('压缩后密度 (g/cm³)')
-    ax4.set_title('密度-压力关系')
+    ax4.scatter(pf_values, rhf_values, c='green', label='Flyer')
+    ax4.set_xlabel('Shock pressure P (GPa)')
+    ax4.set_ylabel('Compressed density (g/cm³)')
+    ax4.set_title('Density-pressure relationship')
     ax4.legend()
     ax4.grid(True)
     
@@ -402,7 +401,7 @@ def plot_results_streamlit(results):
     
     return fig
 
-# 页面函数
+# 页面函数（保留界面中文）
 def home_page():
     st.title("冲击波参数计算与分析系统")
     st.info("""
@@ -427,7 +426,7 @@ def database_mode_page():
     
     materials = get_all_materials()
     if not materials:
-        st.error("数据库中没有可用材料数据")
+        st.error("数据库中没有可用材料")
         return
     
     col1, col2, col3 = st.columns(3)
