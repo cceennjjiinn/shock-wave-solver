@@ -14,11 +14,21 @@ import os
 
 # 设置中文字体
 # 确保中文显示正常（关键修改）
+# 确保中文显示正常（改进版）
 def set_chinese_font():
-    # 尝试使用系统中已有的中文字体
-    available_fonts = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC", "Microsoft YaHei", "KaiTi"]
+    # 扩展中文字体列表，增加更多可能存在的字体
+    available_fonts = [
+        # Windows系统常见字体
+        "SimHei", "Microsoft YaHei", "KaiTi", "FangSong", "SimSun",
+        # Linux系统常见字体
+        "WenQuanYi Micro Hei", "Heiti TC", "Noto Sans CJK SC",
+        # macOS系统常见字体
+        "PingFang SC", "Heiti TC", "STHeiti"
+    ]
+    
     font_found = False
     
+    # 尝试自动检测系统中的中文字体
     for font in available_fonts:
         try:
             # 检查字体是否可用
@@ -29,14 +39,48 @@ def set_chinese_font():
         except:
             continue
     
+    # 如果自动检测失败，尝试使用matplotlib的默认中文字体配置
     if not font_found:
-        # 如果没有找到可用的中文字体，使用默认字体并警告
-        st.warning("未找到中文字体，可能无法正确显示中文标签")
-        plt.rcParams["font.family"] = ["sans-serif"]
+        try:
+            # 尝试设置通用字体族
+            plt.rcParams["font.family"] = ["sans-serif", "serif"]
+            plt.rcParams["font.sans-serif"] = ["Arial Unicode MS", "sans-serif"]
+            font_found = True
+        except:
+            pass
     
-    plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
+    # 仍然失败的话，提示用户并允许手动设置
+    if not font_found:
+        st.warning("""
+        未找到可用的中文字体，中文可能无法正常显示。
+        解决方法：
+        1. 安装中文字体（如微软雅黑、黑体等）
+        2. 手动指定字体路径（请在下方输入）
+        """)
+        
+        # 允许用户手动输入字体路径
+        font_path = st.text_input(
+            "请输入中文字体文件路径（.ttf或.ttc）",
+            value="",
+            help="例如：C:/Windows/Fonts/simhei.ttf 或 /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
+        )
+        
+        if font_path:
+            try:
+                font_prop = matplotlib.font_manager.FontProperties(fname=font_path)
+                plt.rcParams["font.family"] = font_prop.get_name()
+                font_found = True
+                st.success("字体设置成功！")
+            except Exception as e:
+                st.error(f"字体设置失败: {str(e)}")
+    
+    # 解决负号显示问题
+    plt.rcParams["axes.unicode_minus"] = False
+    
+    return font_found
 
-set_chinese_font()
+# 执行字体设置
+font_set_success = set_chinese_font()
 
 # 创建SQLite引擎
 sqlite_path = os.path.abspath('shock_wave_data.db')
