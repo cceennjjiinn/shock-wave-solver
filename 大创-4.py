@@ -153,17 +153,21 @@ def calculate_shock_parameters(U_s, u_p, rho0, gamma=2.0, Cv=385, T0=300):
     """基于Rankine-Hugoniot守恒关系计算冲击波参数"""
     # 动量守恒：P = rho0 * U_s * u_p
     P = rho0 * U_s * u_p
+    
     # 质量守恒推导比容：V = (1/rho0) * (1 - u_p/U_s)
     V = (1 / rho0) * (1 - u_p / U_s)
+    
     # 压缩后密度：rho = rho0 * U_s/(U_s - u_p)
     rho = rho0 * U_s / (U_s - u_p)
+    
     # 比容比：V/V0 = 1 - u_p/U_s
     V_V0 = V * rho0  # 因V0 = 1/rho0，故V/V0 = V * rho0
     
     # 温度计算（Mie-Grüneisen方程近似）
     # 单位转换：1 GPa·cm³/g = 1e5 J/kg
     E_shock = 0.5 * P * (1/rho0 - V) * 1e6  # 冲击内能 (J/kg)
-    T = T0 + (E_shock) / (Cv * (1 + gamma/2))  # 冲击温度 (K)，基于Mie-Grüneisen方程简化形式（适用于弱冲击，忽略体积修正项）
+    # 基于Mie-Grüneisen方程简化形式（适用于弱冲击，忽略体积修正项）
+    T = T0 + (E_shock) / (Cv * (1 + gamma/2))  # 冲击温度 (K)
     
     return P, V, rho, V_V0, T
 
@@ -201,7 +205,7 @@ def fit_material_data(df, material_name):
     
     # 拟合参数
     C0 = model.intercept_    # 体积声速 (km/s)
-    lambda_val = model.coef_[0]  # Hugoniot参数S
+    S = model.coef_[0]       # Hugoniot参数S（原代码中lambda_val，已修正命名）
     y_pred = model.predict(X)
     
     # 拟合误差计算
@@ -209,12 +213,12 @@ def fit_material_data(df, material_name):
     rmse = np.sqrt(mean_squared_error(y, y_pred))  # 均方根误差
     mae = np.mean(np.abs(y - y_pred))              # 平均绝对误差
     
-    st.info(f"{material_name} 拟合结果: Us = {C0:.4f} + {lambda_val:.4f}*Up")
+    st.info(f"{material_name} 拟合结果: Us = {C0:.4f} + {S:.4f}*Up")
     st.info(f"拟合误差: R² = {r2:.4f}, RMSE = {rmse:.4f} km/s, MAE = {mae:.4f} km/s")
     st.info(f"平均参数: ρ₀ = {df['rho0'].mean():.4f} g/cm³, 平均压力 = {df['P'].mean():.4f} GPa")
     
     return {
-        "C0": C0, "lambda": lambda_val, "rho0": df['rho0'].mean(), 
+        "C0": C0, "S": S, "rho0": df['rho0'].mean(),  # 修正参数名lambda为S
         "r2": r2, "rmse": rmse, "mae": mae
     }
 
@@ -304,11 +308,31 @@ def solve_numerically(eqs, sym_vars, initial_guess):
         substitutions = {var_list[i]: x[i] for i in range(len(x))}
         return [float(abs(eq.subs(substitutions).evalf())) for eq in eqs]
     
-    # 执行最小二乘优化
+    # 执行最小二乘优化，根据物理参数调整边界范围
     result = least_squares(
         residuals,
         list(initial_guess.values()),
-        bounds=([0.001]*len(initial_guess), [1000]*len(initial_guess)),  # 物理合理范围
+        bounds=([
+            0.1,   # 密度下限 (g/cm³)
+            0.1,   # 密度下限 (g/cm³)
+            0.1,   # 速度下限 (km/s)
+            0.1,   # 速度下限 (km/s)
+            0.1,   # 速度下限 (km/s)
+            0.1,   # 速度下限 (km/s)
+            0.01,  # 压力下限 (GPa)
+            0.01,  # 压力下限 (GPa)
+            100    # 温度下限 (K)
+        ], [
+            20,    # 密度上限 (g/cm³)
+            20,    # 密度上限 (g/cm³)
+            30,    # 速度上限 (km/s)
+            30,    # 速度上限 (km/s)
+            30,    # 速度上限 (km/s)
+            30,    # 速度上限 (km/s)
+            5000,  # 压力上限 (GPa)
+            5000,  # 压力上限 (GPa)
+            1e5    # 温度上限 (K)
+        ]),
         ftol=1e-6,
         max_nfev=1000
     )
@@ -327,40 +351,41 @@ def generate_shock_plots(df, C0, S):
     fig, axs = plt.subplots(2, 2, figsize=(12, 10))
     
     # Us vs Up
-    axs[0, 0].scatter(df['Up'], df['Us'], label='Experimental data')
+    axs[0, 0].scatter(df['Up'], df['Us'], label='实验数据')
     u_p_range = np.linspace(0, df['Up'].max()*1.1, 100)
     U_s_fit = C0 + S * u_p_range
-    axs[0, 0].plot(u_p_range, U_s_fit, 'r-', label=f'Fit: Us = {C0:.2f} + {S:.2f}·Up')
-    axs[0, 0].set_xlabel('Particle velocity Up (km/s)')
-    axs[0, 0].set_ylabel('Shock wave velocity Us (km/s)')
+    axs[0, 0].plot(u_p_range, U_s_fit, 'r-', label=f'拟合: Us = {C0:.2f} + {S:.2f}·Up')
+    axs[0, 0].set_xlabel('粒子速度 Up (km/s)')
+    axs[0, 0].set_ylabel('冲击波速度 Us (km/s)')
     axs[0, 0].legend()
     axs[0, 0].grid(True)
     
     # P vs Up
-    axs[0, 1].scatter(df['Up'], df['P'], label='Experimental data')
-    rho0 = df['rho0'].iloc[0] if not df.empty else 8.96
+    axs[0, 1].scatter(df['Up'], df['P'], label='实验数据')
+    # 使用数据中的平均密度而非硬编码值
+    rho0 = df['rho0'].mean() if not df.empty else 8.96
     P_range = rho0 * U_s_fit * u_p_range  # P = rho0 * Us * Up
-    axs[0, 1].plot(u_p_range, P_range, 'r-', label='Theoretical curve: P = ρ0·Us·Up')
-    axs[0, 1].set_xlabel('Particle velocity Up (km/s)')
-    axs[0, 1].set_ylabel('Pressure P (GPa)')
+    axs[0, 1].plot(u_p_range, P_range, 'r-', label='理论曲线: P = ρ0·Us·Up')
+    axs[0, 1].set_xlabel('粒子速度 Up (km/s)')
+    axs[0, 1].set_ylabel('压力 P (GPa)')
     axs[0, 1].legend()
     axs[0, 1].grid(True)
     
     # P vs V/V0
-    axs[1, 0].scatter(df['V_V0'], df['P'], label='Experimental data')
+    axs[1, 0].scatter(df['V_V0'], df['P'], label='实验数据')
     V_V0_range = 1 - u_p_range / U_s_fit  # V/V0 = 1 - Up/Us
-    axs[1, 0].plot(V_V0_range, P_range, 'r-', label='Theoretical curve')
-    axs[1, 0].set_xlabel('Specific volume ratio V/V0')
-    axs[1, 0].set_ylabel('Pressure P (GPa)')
+    axs[1, 0].plot(V_V0_range, P_range, 'r-', label='理论曲线')
+    axs[1, 0].set_xlabel('比容比 V/V0')
+    axs[1, 0].set_ylabel('压力 P (GPa)')
     axs[1, 0].legend()
     axs[1, 0].grid(True)
     
     # rho vs P
-    axs[1, 1].scatter(df['P'], df['rho'], label='Experimental data')
+    axs[1, 1].scatter(df['P'], df['rho'], label='实验数据')
     rho_range = rho0 * U_s_fit / (U_s_fit - u_p_range)  # rho = rho0·Us/(Us-Up)
-    axs[1, 1].plot(P_range, rho_range, 'r-', label='Theoretical curve')
-    axs[1, 1].set_xlabel('Pressure P (GPa)')
-    axs[1, 1].set_ylabel('Density ρ (g/cm³)')
+    axs[1, 1].plot(P_range, rho_range, 'r-', label='理论曲线')
+    axs[1, 1].set_xlabel('压力 P (GPa)')
+    axs[1, 1].set_ylabel('密度 ρ (g/cm³)')
     axs[1, 1].legend()
     axs[1, 1].grid(True)
     
@@ -401,37 +426,37 @@ def plot_results_streamlit(results):
     ax1.errorbar(uf_values, pf_values, 
                  yerr=[r.get('Pf_err', 0.1) for r in results],
                  xerr=[r.get('uf_err', 0.05) for r in results],
-                 fmt='bo', ecolor='r', capsize=5, label='Flyer data')
-    ax1.set_xlabel('Particle velocity Up (km/s)')
-    ax1.set_ylabel('Shock pressure P (GPa)')
-    ax1.set_title('Pressure-particle velocity relationship (with error range)')
+                 fmt='bo', ecolor='r', capsize=5, label='飞片数据')
+    ax1.set_xlabel('粒子速度 Up (km/s)')
+    ax1.set_ylabel('冲击压力 P (GPa)')
+    ax1.set_title('压力-粒子速度关系（含误差范围）')
     ax1.legend()
     ax1.grid(True)
     
     # 2. 温度-压力图
     ax2 = fig.add_subplot(222)
-    ax2.scatter(pf_values, tf_values, c='orange', label='Flyer temperature')
-    ax2.set_xlabel('Shock pressure P (GPa)')
-    ax2.set_ylabel('Shock temperature T (K)')
-    ax2.set_title('Temperature-pressure relationship')
+    ax2.scatter(pf_values, tf_values, c='orange', label='飞片温度')
+    ax2.set_xlabel('冲击压力 P (GPa)')
+    ax2.set_ylabel('冲击温度 T (K)')
+    ax2.set_title('温度-压力关系')
     ax2.legend()
     ax2.grid(True)
     
     # 3. 冲击波速度-粒子速度图
     ax3 = fig.add_subplot(223)
-    ax3.scatter(uf_values, df_values, c='blue', label='Flyer')
-    ax3.set_xlabel('Particle velocity Up (km/s)')
-    ax3.set_ylabel('Shock wave velocity Us (km/s)')
-    ax3.set_title('Shock wave velocity-particle velocity relationship')
+    ax3.scatter(uf_values, df_values, c='blue', label='飞片')
+    ax3.set_xlabel('粒子速度 Up (km/s)')
+    ax3.set_ylabel('冲击波速度 Us (km/s)')
+    ax3.set_title('冲击波速度-粒子速度关系')
     ax3.legend()
     ax3.grid(True)
     
     # 4. 密度-压力图
     ax4 = fig.add_subplot(224)
-    ax4.scatter(pf_values, rhf_values, c='green', label='Flyer')
-    ax4.set_xlabel('Shock pressure P (GPa)')
-    ax4.set_ylabel('Compressed density (g/cm³)')
-    ax4.set_title('Density-pressure relationship')
+    ax4.scatter(pf_values, rhf_values, c='green', label='飞片')
+    ax4.set_xlabel('冲击压力 P (GPa)')
+    ax4.set_ylabel('压缩后密度 (g/cm³)')
+    ax4.set_title('密度-压力关系')
     ax4.legend()
     ax4.grid(True)
     
@@ -507,10 +532,11 @@ def database_mode_page():
         )
     
     default_params = {"f": flyer_fit, "b": base_fit, "s": sample_fit}
+    # 修正参数名nubdaf/nubdab/nubdas为Sf/Sb/Ss，更清晰表示Hugoniot参数S
     variables = {
-        "f": ["rh0f", "rhf", "Df", "C0f", "nubdaf", "E0f", "Ef", "uf", "w", "Pf", "gammaf", "Tf"],
-        "b": ["rh0b", "rhb", "Db", "C0b", "nubdab", "E0b", "Eb", "ub", "Pb", "gammab", "Tb"],
-        "s": ["rh0s", "rhs", "Ds", "C0s", "nubdas", "E0s", "Es", "us", "Ps", "gammas", "Ts"]
+        "f": ["rh0f", "rhf", "Df", "C0f", "Sf", "E0f", "Ef", "uf", "w", "Pf", "gammaf", "Tf"],
+        "b": ["rh0b", "rhb", "Db", "C0b", "Sb", "E0b", "Eb", "ub", "Pb", "gammab", "Tb"],
+        "s": ["rh0s", "rhs", "Ds", "C0s", "Ss", "E0s", "Es", "us", "Ps", "gammas", "Ts"]
     }
     
     input_params = {}
@@ -524,9 +550,9 @@ def database_mode_page():
             "rhf": "压缩后密度",
             "Df": "冲击波速度（对应Us）",
             "C0f": "体积声速（Hugoniot拟合）",
-            "nubdaf": "Hugoniot参数S（无量纲）",
-            "E0f": "初始内能（单位体积）",
-            "Ef": "压缩后内能（单位体积）",
+            "Sf": "Hugoniot参数S（无量纲）",
+            "E0f": "初始内能密度",
+            "Ef": "压缩后内能密度",
             "uf": "粒子速度（对应Up）",
             "w": "飞片初始撞击速度",
             "Pf": "冲击压力",
@@ -538,9 +564,9 @@ def database_mode_page():
             "rhf": "g/cm³",
             "Df": "km/s",
             "C0f": "km/s",
-            "nubdaf": "无量纲",
-            "E0f": "GPa",
-            "Ef": "GPa",
+            "Sf": "无量纲",
+            "E0f": "GPa·cm³/g",  # 修正能量单位，从GPa改为GPa·cm³/g
+            "Ef": "GPa·cm³/g",
             "uf": "km/s",
             "w": "km/s",
             "Pf": "GPa",
@@ -550,13 +576,13 @@ def database_mode_page():
         for i, var in enumerate(variables["f"]):
             with cols[i % 3]:
                 default_val = None
-                if default_params["f"] and var in ["rh0f", "C0f", "nubdaf"]:
+                if default_params["f"] and var in ["rh0f", "C0f", "Sf"]:
                     if var == "rh0f":
                         default_val = default_params["f"]["rho0"]
                     elif var == "C0f":
                         default_val = default_params["f"]["C0"]
-                    elif var == "nubdaf":
-                        default_val = default_params["f"]["lambda"]
+                    elif var == "Sf":
+                        default_val = default_params["f"]["S"]  # 修正参数名
                 elif var == "gammaf":
                     default_val = 2.0  # 默认Grüneisen系数
                 val = get_input_streamlit(
@@ -576,13 +602,13 @@ def database_mode_page():
         for i, var in enumerate(variables["b"]):
             with cols[i % 3]:
                 default_val = None
-                if default_params["b"] and var in ["rh0b", "C0b", "nubdab"]:
+                if default_params["b"] and var in ["rh0b", "C0b", "Sb"]:
                     if var == "rh0b":
                         default_val = default_params["b"]["rho0"]
                     elif var == "C0b":
                         default_val = default_params["b"]["C0"]
-                    elif var == "nubdab":
-                        default_val = default_params["b"]["lambda"]
+                    elif var == "Sb":
+                        default_val = default_params["b"]["S"]  # 修正参数名
                 elif var == "gammab":
                     default_val = 2.0  # 默认Grüneisen系数
                 val = get_input_streamlit(
@@ -592,15 +618,16 @@ def database_mode_page():
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Db", "C0b", "ub"] else 
-                         "GPa" if var in ["E0b", "Eb", "Pb"] else 
+                         "GPa·cm³/g" if var in ["E0b", "Eb"] else  # 修正能量单位
+                         "GPa" if var == "Pb" else 
                          "K" if var == "Tb" else "无量纲",
                     desc="初始密度" if var == "rh0b" else
                          "压缩后密度" if var == "rhb" else
                          "冲击波速度" if var == "Db" else
                          "体积声速" if var == "C0b" else
-                         "Hugoniot参数" if var == "nubdab" else
-                         "初始内能" if var == "E0b" else
-                         "压缩后内能" if var == "Eb" else
+                         "Hugoniot参数" if var == "Sb" else  # 修正参数描述
+                         "初始内能密度" if var == "E0b" else
+                         "压缩后内能密度" if var == "Eb" else
                          "粒子速度" if var == "ub" else
                          "冲击压力" if var == "Pb" else
                          "Grüneisen系数" if var == "gammab" else
@@ -615,13 +642,13 @@ def database_mode_page():
         for i, var in enumerate(variables["s"]):
             with cols[i % 3]:
                 default_val = None
-                if default_params["s"] and var in ["rh0s", "C0s", "nubdas"]:
+                if default_params["s"] and var in ["rh0s", "C0s", "Ss"]:
                     if var == "rh0s":
                         default_val = default_params["s"]["rho0"]
                     elif var == "C0s":
                         default_val = default_params["s"]["C0"]
-                    elif var == "nubdas":
-                        default_val = default_params["s"]["lambda"]
+                    elif var == "Ss":
+                        default_val = default_params["s"]["S"]  # 修正参数名
                 elif var == "gammas":
                     default_val = 2.0  # 默认Grüneisen系数
                 val = get_input_streamlit(
@@ -631,15 +658,16 @@ def database_mode_page():
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Ds", "C0s", "us"] else 
-                         "GPa" if var in ["E0s", "Es", "Ps"] else 
+                         "GPa·cm³/g" if var in ["E0s", "Es"] else  # 修正能量单位
+                         "GPa" if var == "Ps" else 
                          "K" if var == "Ts" else "无量纲",
                     desc="初始密度" if var == "rh0s" else
                          "压缩后密度" if var == "rhs" else
                          "冲击波速度" if var == "Ds" else
                          "体积声速" if var == "C0s" else
-                         "Hugoniot参数" if var == "nubdas" else
-                         "初始内能" if var == "E0s" else
-                         "压缩后内能" if var == "Es" else
+                         "Hugoniot参数" if var == "Ss" else  # 修正参数描述
+                         "初始内能密度" if var == "E0s" else
+                         "压缩后内能密度" if var == "Es" else
                          "粒子速度" if var == "us" else
                          "冲击压力" if var == "Ps" else
                          "Grüneisen系数" if var == "gammas" else
@@ -692,7 +720,7 @@ def database_mode_page():
                 
             current_subs = {sym_vars[k]: v for k, v in combo}
             
-            # 方程组
+            # 方程组，修正了参数名nubdaf/nubdab为Sf/Sb
             eqs = [
                 # 飞片质量守恒：rho0f·Df = rhf·(Df - uf)
                 Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
@@ -706,10 +734,10 @@ def database_mode_page():
                 Eq(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
                 # 基板能量守恒：Eb = E0b + 0.5·Pb·(1/rho0b - 1/rhb)
                 Eq(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
-                # 飞片Hugoniot关系：Df = C0f + nubdaf·(w - uf)
-                Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['nubdaf']*(sym_vars['w'] - sym_vars['uf']), 0),
-                # 基板Hugoniot关系：Db = C0b + nubdab·ub
-                Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['nubdab']*sym_vars['ub'], 0),
+                # 飞片Hugoniot关系：Df = C0f + Sf·(w - uf)
+                Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*(sym_vars['w'] - sym_vars['uf']), 0),
+                # 基板Hugoniot关系：Db = C0b + Sb·ub
+                Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*sym_vars['ub'], 0),
                 # 界面压力连续：Pf = Pb
                 Eq(sym_vars['Pf'] - sym_vars['Pb'], 0),
                 # 界面粒子速度连续：uf = ub
@@ -721,7 +749,7 @@ def database_mode_page():
                 cond = all([
                     current_subs.get(sym_vars['rh0s'], sym_vars['rh0s']) == current_subs.get(sym_vars['rh0b'], sym_vars['rh0b']),
                     current_subs.get(sym_vars['C0b'], sym_vars['C0b']) == current_subs.get(sym_vars['C0s'], sym_vars['C0s']),
-                    current_subs.get(sym_vars['nubdab'], sym_vars['nubdab']) == current_subs.get(sym_vars['nubdas'], sym_vars['nubdas']),
+                    current_subs.get(sym_vars['Sb'], sym_vars['Sb']) == current_subs.get(sym_vars['Ss'], sym_vars['Ss']),
                     current_subs.get(sym_vars['E0b'], sym_vars['E0b']) == current_subs.get(sym_vars['E0s'], sym_vars['E0s'])
                 ])
             except TypeError:
@@ -752,9 +780,9 @@ def database_mode_page():
                     # 样品能量守恒
                     Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0),
                     # 样品Hugoniot关系
-                    Eq(sym_vars['Ds'] - sym_vars['C0s'] - sym_vars['nubdas']*sym_vars['us'], 0),
+                    Eq(sym_vars['Ds'] - sym_vars['C0s'] - sym_vars['Ss']*sym_vars['us'], 0),
                     # 基板-样品界面Hugoniot关系
-                    Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['nubdab']*(2*sym_vars['ub'] - sym_vars['us']), 0),
+                    Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*(2*sym_vars['ub'] - sym_vars['us']), 0),
                     Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),  # 压力连续
                     Eq(sym_vars['ub'] - sym_vars['us'], 0)   # 速度连续
                 ]
@@ -910,11 +938,11 @@ def manual_mode_page():
         if st.button("保存输入数据到数据库"):
             save_input_data_to_db(calculation_result, material_name, exp_method)
     
-    # 参数输入
+    # 参数输入，修正参数名nubdaf/nubdab/nubdas为Sf/Sb/Ss
     variables = {
-        "f": ["rh0f", "rhf", "Df", "C0f", "nubdaf", "E0f", "Ef", "uf", "w", "Pf", "gammaf", "Tf"],
-        "b": ["rh0b", "rhb", "Db", "C0b", "nubdab", "E0b", "Eb", "ub", "Pb", "gammab", "Tb"],
-        "s": ["rh0s", "rhs", "Ds", "C0s", "nubdas", "E0s", "Es", "us", "Ps", "gammas", "Ts"]
+        "f": ["rh0f", "rhf", "Df", "C0f", "Sf", "E0f", "Ef", "uf", "w", "Pf", "gammaf", "Tf"],
+        "b": ["rh0b", "rhb", "Db", "C0b", "Sb", "E0b", "Eb", "ub", "Pb", "gammab", "Tb"],
+        "s": ["rh0s", "rhs", "Ds", "C0s", "Ss", "E0s", "Es", "us", "Ps", "gammas", "Ts"]
     }
     
     input_params = {}
@@ -932,15 +960,16 @@ def manual_mode_page():
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Df", "C0f", "uf", "w"] else 
-                         "GPa" if var in ["E0f", "Ef", "Pf"] else
+                         "GPa·cm³/g" if var in ["E0f", "Ef"] else  # 修正能量单位
+                         "GPa" if var == "Pf" else
                          "K" if var == "Tf" else "无量纲",
                     desc="飞片初始密度" if var == "rh0f" else
                          "飞片压缩后密度" if var == "rhf" else
                          "飞片冲击波速度" if var == "Df" else
                          "飞片体积声速" if var == "C0f" else
-                         "飞片Hugoniot参数" if var == "nubdaf" else
-                         "飞片初始内能" if var == "E0f" else
-                         "飞片压缩后内能" if var == "Ef" else
+                         "飞片Hugoniot参数S" if var == "Sf" else  # 修正参数描述
+                         "飞片初始内能密度" if var == "E0f" else
+                         "飞片压缩后内能密度" if var == "Ef" else
                          "飞片粒子速度" if var == "uf" else
                          "飞片初始撞击速度" if var == "w" else
                          "飞片冲击压力" if var == "Pf" else
@@ -963,15 +992,16 @@ def manual_mode_page():
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Db", "C0b", "ub"] else 
-                         "GPa" if var in ["E0b", "Eb", "Pb"] else
+                         "GPa·cm³/g" if var in ["E0b", "Eb"] else  # 修正能量单位
+                         "GPa" if var == "Pb" else
                          "K" if var == "Tb" else "无量纲",
                     desc="基板初始密度" if var == "rh0b" else
                          "基板压缩后密度" if var == "rhb" else
                          "基板冲击波速度" if var == "Db" else
                          "基板体积声速" if var == "C0b" else
-                         "基板Hugoniot参数" if var == "nubdab" else
-                         "基板初始内能" if var == "E0b" else
-                         "基板压缩后内能" if var == "Eb" else
+                         "基板Hugoniot参数S" if var == "Sb" else  # 修正参数描述
+                         "基板初始内能密度" if var == "E0b" else
+                         "基板压缩后内能密度" if var == "Eb" else
                          "基板粒子速度" if var == "ub" else
                          "基板冲击压力" if var == "Pb" else
                          "基板Grüneisen系数" if var == "gammab" else
@@ -993,23 +1023,23 @@ def manual_mode_page():
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Ds", "C0s", "us"] else 
-                         "GPa" if var in ["E0s", "Es", "Ps"] else
+                         "GPa·cm³/g" if var in ["E0s", "Es"] else  # 修正能量单位
+                         "GPa" if var == "Ps" else
                          "K" if var == "Ts" else "无量纲",
                     desc="样品初始密度" if var == "rh0s" else
                          "样品压缩后密度" if var == "rhs" else
                          "样品冲击波速度" if var == "Ds" else
                          "样品体积声速" if var == "C0s" else
-                         "样品Hugoniot参数" if var == "nubdas" else
-                         "样品初始内能" if var == "E0s" else
-                         "样品压缩后内能" if var == "Es" else
+                         "样品Hugoniot参数S" if var == "Ss" else  # 修正参数描述
+                         "样品初始内能密度" if var == "E0s" else
+                         "样品压缩后内能密度" if var == "Es" else
                          "样品粒子速度" if var == "us" else
                          "样品冲击压力" if var == "Ps" else
                          "样品Grüneisen系数" if var == "gammas" else
                          "样品冲击温度"
                 )
                 input_params[var] = val
-                sym_vars[var] = symbols(var)
-                sym_vars[var] = symbols(var)
+                sym_vars[var] = symbols(var)  # 移除重复的变量定义
     
     # 参数组合限制
     range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
@@ -1066,7 +1096,7 @@ def manual_mode_page():
             except:
                 pass
             
-            # 方程组定义
+            # 方程组定义，修正了参数名nubdaf/nubdab为Sf/Sb
             eqs = [
                 Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
                 Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
@@ -1074,8 +1104,8 @@ def manual_mode_page():
                 Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*sym_vars['ub'], 0),
                 Eq(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
                 Eq(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
-                Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['nubdaf']*(sym_vars['w'] - sym_vars['uf']), 0),
-                Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['nubdab']*sym_vars['ub'], 0),
+                Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*(sym_vars['w'] - sym_vars['uf']), 0),
+                Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*sym_vars['ub'], 0),
                 Eq(sym_vars['Pf'] - sym_vars['Pb'], 0),
                 Eq(sym_vars['uf'] - sym_vars['ub'], 0)
             ]
@@ -1085,10 +1115,11 @@ def manual_mode_page():
                 cond = all([
                     current_subs.get(sym_vars['rh0s'], sym_vars['rh0s']) == current_subs.get(sym_vars['rh0b'], sym_vars['rh0b']),
                     current_subs.get(sym_vars['C0b'], sym_vars['C0b']) == current_subs.get(sym_vars['C0s'], sym_vars['C0s']),
-                    current_subs.get(sym_vars['nubdab'], sym_vars['nubdab']) == current_subs.get(sym_vars['nubdas'], sym_vars['nubdas']),
+                    current_subs.get(sym_vars['Sb'], sym_vars['Sb']) == current_subs.get(sym_vars['Ss'], sym_vars['Ss']),
                     current_subs.get(sym_vars['E0b'], sym_vars['E0b']) == current_subs.get(sym_vars['E0s'], sym_vars['E0s'])
                 ])
             except TypeError:
+                cond = False
                 cond = False
                 
             if cond:
@@ -1112,9 +1143,9 @@ def manual_mode_page():
                     # 样品能量守恒
                     Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0),
                     # 样品Hugoniot关系
-                    Eq(sym_vars['Ds'] - sym_vars['C0s'] - sym_vars['nubdas']*sym_vars['us'], 0),
+                    Eq(sym_vars['Ds'] - sym_vars['C0s'] - sym_vars['Ss']*sym_vars['us'], 0),
                     # 基板-样品界面Hugoniot关系
-                    Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['nubdab']*(2*sym_vars['ub'] - sym_vars['us']), 0),
+                    Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*(2*sym_vars['ub'] - sym_vars['us']), 0),
                     Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),  # 压力连续
                     Eq(sym_vars['ub'] - sym_vars['us'], 0)   # 速度连续
                 ]
