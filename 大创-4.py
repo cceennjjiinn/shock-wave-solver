@@ -371,7 +371,7 @@ def generate_shock_plots(df, C0, S, material_name, material_type, use_english=Fa
         axs[0, 0].set_xlabel('Particle velocity Up (km/s)')
         axs[0, 0].set_ylabel('Shock wave velocity Us (km/s)')
     else:
-        axs[0, 0].plot(u_p_range, U_s_fit, 'r-', label=f'拟合: Us = {C0:.2f} + {S:.2f}·Up') ·Up')
+        axs[0, 0].plot(u_p_range, U_s_fit, 'r-', label=f'拟合: Us = {C0:.2f} + {S:.2f}·Up')
         axs[0, 0].set_xlabel('粒子速度 Up (km/s)')
         axs[0, 0].set_ylabel('冲击波速度 Us (km/s)')
         
