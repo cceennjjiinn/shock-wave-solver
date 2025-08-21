@@ -6,25 +6,39 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error
-from sympy import symbols, Eq, solve
+from sympy import symbols, Eq
 from scipy.optimize import least_squares
 from io import BytesIO
 from PIL import Image
 import itertools
 import os
 
-# 设置中文字体（保留界面中文显示）
+# 设置中文字体
 plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC", "Arial"]
 plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
 
+# 初始化会话状态
+def init_session_state():
+    if 'page' not in st.session_state:
+        st.session_state.page = "home"
+    if 'material_fits' not in st.session_state:
+        st.session_state.material_fits = {}  # 保存材料拟合结果
+    if 'db_initialized' not in st.session_state:
+        st.session_state.db_initialized = False  # 数据库初始化标记
+    if 'current_results' not in st.session_state:
+        st.session_state.current_results = None  # 当前计算结果
+
 # 创建SQLite引擎 - 优化连接池配置
-sqlite_path = os.path.abspath('shock_wave_data.db')
-sqlite_engine = create_engine(
-    f'sqlite:///{sqlite_path}',
-    pool_size=5,          # 保持5个持久连接
-    max_overflow=10,      # 最多额外创建10个临时连接
-    pool_recycle=3600     # 1小时后回收连接
-)
+@st.cache_resource
+def create_sql_engine():
+    sqlite_path = os.path.abspath('shock_wave_data.db')
+    engine = create_engine(
+        f'sqlite:///{sqlite_path}',
+        pool_size=5,          # 保持5个持久连接
+        max_overflow=10,      # 最多额外创建10个临时连接
+        pool_recycle=3600     # 1小时后回收连接
+    )
+    return engine
 
 # SQLite性能优化
 @event.listens_for(Engine, "connect")
@@ -36,10 +50,13 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor.execute('PRAGMA cache_size=-20000;')   # 增加缓存(20MB)
     cursor.close()
 
-# 初始化数据库 - 增加material字段索引
-def init_database():
+# 初始化数据库
+def init_database(engine):
+    if st.session_state.db_initialized:
+        return True
+        
     try:
-        with sqlite_engine.connect() as conn:
+        with engine.connect() as conn:
             if not conn.dialect.has_table(conn, 'shock_wave_all_data'):
                 conn.execute(text("""
                     CREATE TABLE shock_wave_all_data (
@@ -55,28 +72,29 @@ def init_database():
                         exp_method TEXT, -- 实验方法/数据来源
                         gamma REAL,      -- Grüneisen系数
                         T REAL,          -- 冲击温度 (K)
-                        INDEX idx_material (material)  -- 新增索引加速查询
+                        INDEX idx_material (material)  -- 索引加速查询
                     )
                 """))
                 conn.commit()
+        st.session_state.db_initialized = True
+        return True
     except Exception as e:
         st.error(f"数据库初始化失败: {str(e)}")
-
-init_database()
+        return False
 
 # 数据库操作函数 - 优化查询效率
 @st.cache_data(ttl=3600)  # 缓存1小时
-def get_all_materials():
+def get_all_materials(engine):
     try:
         query = text("SELECT DISTINCT material FROM shock_wave_all_data")
-        with sqlite_engine.connect() as conn:
+        with engine.connect() as conn:
             df = pd.read_sql(query, conn)
         return df['material'].tolist()
     except Exception as e:
         st.warning(f"获取材料列表失败: {str(e)}")
         return []
 
-def get_material_data(material_name, fields=None):
+def get_material_data(engine, material_name, fields=None):
     """按需查询字段，减少数据传输量"""
     try:
         if fields is None:
@@ -84,20 +102,20 @@ def get_material_data(material_name, fields=None):
         else:
             fields = ', '.join(fields)  # 按需指定字段
         query = text(f"SELECT {fields} FROM shock_wave_all_data WHERE material = :material")
-        with sqlite_engine.connect() as conn:
+        with engine.connect() as conn:
             df = pd.read_sql(query, conn, params={'material': material_name})
         return df
     except Exception as e:
         st.warning(f"获取材料数据失败: {str(e)}")
         return pd.DataFrame()
 
-def save_results_to_db(results, material_name="Copper"):
+def save_results_to_db(engine, results, material_name="Copper"):
     if not results:
         st.warning("没有数据可保存")
         return
         
     try:
-        with sqlite_engine.begin() as conn:
+        with engine.begin() as conn:
             for result in results:
                 data = {
                     'material': material_name,
@@ -122,9 +140,9 @@ def save_results_to_db(results, material_name="Copper"):
     except Exception as e:
         st.error(f"保存失败: {str(e)}")
 
-def save_input_data_to_db(input_data, material_name, exp_method="manual_input"):
+def save_input_data_to_db(engine, input_data, material_name, exp_method="manual_input"):
     try:
-        with sqlite_engine.begin() as conn:
+        with engine.begin() as conn:
             data = {
                 'material': material_name,
                 'rho0': input_data.get('rho0', 0),
@@ -167,7 +185,7 @@ def calculate_shock_parameters(U_s, u_p, rho0, gamma=2.0, Cv=385, T0=300):
     
     return P, V, rho, V_V0, T
 
-# Hugoniot关系拟合 - 优化数据预处理
+# Hugoniot关系拟合
 def fit_hugoniot(df):
     # 过滤物理无效数据
     df = df[(df['Us'] > df['Up']) & (df['Us'] > 0) & (df['Up'] >= 0)]
@@ -181,8 +199,12 @@ def fit_hugoniot(df):
     C0 = coeffs[1]   # 截距（零压声速）
     return C0, S
 
-@st.cache_data(ttl=3600)  # 缓存拟合结果
 def fit_material_data(df, material_name):
+    """使用会话状态缓存拟合结果，避免重渲染时重复计算"""
+    # 检查缓存
+    if material_name in st.session_state.material_fits:
+        return st.session_state.material_fits[material_name]
+    
     if df is None or df.empty:
         st.warning(f"材料 '{material_name}' 没有数据")
         return None
@@ -209,14 +231,14 @@ def fit_material_data(df, material_name):
     rmse = np.sqrt(mean_squared_error(y, y_pred))  # 均方根误差
     mae = np.mean(np.abs(y - y_pred))              # 平均绝对误差
     
-    st.info(f"{material_name} 拟合结果: Us = {C0:.4f} + {lambda_val:.4f}*Up")
-    st.info(f"拟合误差: R² = {r2:.4f}, RMSE = {rmse:.4f} km/s, MAE = {mae:.4f} km/s")
-    st.info(f"平均参数: ρ₀ = {df['rho0'].mean():.4f} g/cm³, 平均压力 = {df['P'].mean():.4f} GPa")
-    
-    return {
+    result = {
         "C0": C0, "lambda": lambda_val, "rho0": df['rho0'].mean(), 
         "r2": r2, "rmse": rmse, "mae": mae
     }
+    
+    # 存入缓存
+    st.session_state.material_fits[material_name] = result
+    return result
 
 # 误差传递计算
 def calculate_error(params, param_errors):
@@ -237,20 +259,20 @@ def calculate_error(params, param_errors):
         "Up_err": Up_err
     }
 
-# 输入函数
-def get_input_streamlit(label, var_name, key, default=None, unit="", desc=""):
+# 输入函数 - 优化key生成
+def get_input_streamlit(label, var_name, key_prefix, default=None, unit="", desc=""):
     st.caption(f"{desc} | 单位: {unit}")
     input_type = st.radio(
         f"{label} 输入类型",
         ["单个值", "多个值(逗号分隔)", "范围(带可选步长)"],
-        key=f"{key}_type",
+        key=f"{key_prefix}_type",
         horizontal=True
     )
     
     default_val = str(default) if default is not None else ""
     
     if input_type == "单个值":
-        val = st.text_input(label, default_val, key=f"{key}_single")
+        val = st.text_input(label, default_val, key=f"{key_prefix}_single")
         if val == "":
             return symbols(var_name)
         try:
@@ -259,7 +281,7 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc=""):
             st.error("请输入有效的数值")
             return None
     elif input_type == "多个值(逗号分隔)":
-        val = st.text_input(label, default_val, key=f"{key}_multi")
+        val = st.text_input(label, default_val, key=f"{key_prefix}_multi")
         if val == "":
             return symbols(var_name)
         try:
@@ -270,11 +292,11 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc=""):
     else:
         col1, col2, col3 = st.columns(3)
         with col1:
-            start = st.text_input(f"{label} 起始值", default_val, key=f"{key}_start")
+            start = st.text_input(f"{label} 起始值", default_val, key=f"{key_prefix}_start")
         with col2:
-            end = st.text_input(f"{label} 结束值", "", key=f"{key}_end")
+            end = st.text_input(f"{label} 结束值", "", key=f"{key_prefix}_end")
         with col3:
-            step = st.text_input(f"{label} 步长(可选)", "0.5", key=f"{key}_step")
+            step = st.text_input(f"{label} 步长(可选)", "0.5", key=f"{key_prefix}_step")
             
         if not start or not end:
             return symbols(var_name)
@@ -294,7 +316,7 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc=""):
             st.error("请输入有效的范围数值")
             return None
 
-# 数值求解器（替代符号求解，提高速度）
+# 数值求解器
 def solve_numerically(eqs, sym_vars, initial_guess):
     """使用数值方法求解方程组"""
     var_list = list(sym_vars.values())
@@ -317,9 +339,9 @@ def solve_numerically(eqs, sym_vars, initial_guess):
         return {str(var_list[i]): float(result.x[i]) for i in range(len(result.x))}
     return None
 
-# 冲击波关系图
-@st.cache_data(ttl=3600)  # 缓存绘图结果
-def generate_shock_plots(df, C0, S):
+# 冲击波关系图 - 使用缓存
+@st.cache_data(ttl=3600)
+def generate_shock_plots(df, C0, S, material_name):
     # 数据量大时采样
     if len(df) > 1000:
         df = df.sample(1000)
@@ -327,40 +349,40 @@ def generate_shock_plots(df, C0, S):
     fig, axs = plt.subplots(2, 2, figsize=(12, 10))
     
     # Us vs Up
-    axs[0, 0].scatter(df['Up'], df['Us'], label='Experimental data')
+    axs[0, 0].scatter(df['Up'], df['Us'], label='实验数据')
     u_p_range = np.linspace(0, df['Up'].max()*1.1, 100)
     U_s_fit = C0 + S * u_p_range
-    axs[0, 0].plot(u_p_range, U_s_fit, 'r-', label=f'Fit: Us = {C0:.2f} + {S:.2f}·Up')
-    axs[0, 0].set_xlabel('Particle velocity Up (km/s)')
-    axs[0, 0].set_ylabel('Shock wave velocity Us (km/s)')
+    axs[0, 0].plot(u_p_range, U_s_fit, 'r-', label=f'拟合: Us = {C0:.2f} + {S:.2f}·Up')
+    axs[0, 0].set_xlabel('粒子速度 Up (km/s)')
+    axs[0, 0].set_ylabel('冲击波速度 Us (km/s)')
     axs[0, 0].legend()
     axs[0, 0].grid(True)
     
     # P vs Up
-    axs[0, 1].scatter(df['Up'], df['P'], label='Experimental data')
+    axs[0, 1].scatter(df['Up'], df['P'], label='实验数据')
     rho0 = df['rho0'].iloc[0] if not df.empty else 8.96
     P_range = rho0 * U_s_fit * u_p_range  # P = rho0 * Us * Up
-    axs[0, 1].plot(u_p_range, P_range, 'r-', label='Theoretical curve: P = ρ0·Us·Up')
-    axs[0, 1].set_xlabel('Particle velocity Up (km/s)')
-    axs[0, 1].set_ylabel('Pressure P (GPa)')
+    axs[0, 1].plot(u_p_range, P_range, 'r-', label='理论曲线: P = ρ0·Us·Up')
+    axs[0, 1].set_xlabel('粒子速度 Up (km/s)')
+    axs[0, 1].set_ylabel('压力 P (GPa)')
     axs[0, 1].legend()
     axs[0, 1].grid(True)
     
     # P vs V/V0
-    axs[1, 0].scatter(df['V_V0'], df['P'], label='Experimental data')
+    axs[1, 0].scatter(df['V_V0'], df['P'], label='实验数据')
     V_V0_range = 1 - u_p_range / U_s_fit  # V/V0 = 1 - Up/Us
-    axs[1, 0].plot(V_V0_range, P_range, 'r-', label='Theoretical curve')
-    axs[1, 0].set_xlabel('Specific volume ratio V/V0')
-    axs[1, 0].set_ylabel('Pressure P (GPa)')
+    axs[1, 0].plot(V_V0_range, P_range, 'r-', label='理论曲线')
+    axs[1, 0].set_xlabel('比容比 V/V0')
+    axs[1, 0].set_ylabel('压力 P (GPa)')
     axs[1, 0].legend()
     axs[1, 0].grid(True)
     
     # rho vs P
-    axs[1, 1].scatter(df['P'], df['rho'], label='Experimental data')
+    axs[1, 1].scatter(df['P'], df['rho'], label='实验数据')
     rho_range = rho0 * U_s_fit / (U_s_fit - u_p_range)  # rho = rho0·Us/(Us-Up)
-    axs[1, 1].plot(P_range, rho_range, 'r-', label='Theoretical curve')
-    axs[1, 1].set_xlabel('Pressure P (GPa)')
-    axs[1, 1].set_ylabel('Density ρ (g/cm³)')
+    axs[1, 1].plot(P_range, rho_range, 'r-', label='理论曲线')
+    axs[1, 1].set_xlabel('压力 P (GPa)')
+    axs[1, 1].set_ylabel('密度 ρ (g/cm³)')
     axs[1, 1].legend()
     axs[1, 1].grid(True)
     
@@ -369,12 +391,12 @@ def generate_shock_plots(df, C0, S):
 
 def save_plot_to_bytes(fig):
     buf = BytesIO()
-    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')  # 降低分辨率加速
+    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
     buf.seek(0)
     return buf
 
-# 绘图函数
-@st.cache_data(ttl=3600)  # 缓存绘图结果
+# 绘图函数 - 使用缓存
+@st.cache_data(ttl=3600)
 def plot_results_streamlit(results):
     if not results:
         return None
@@ -387,8 +409,6 @@ def plot_results_streamlit(results):
     
     # 温度相关数据
     tf_values = [r.get('Tf', 0) for r in results]
-    tb_values = [r.get('Tb', 0) for r in results]
-    ts_values = [r.get('Ts', 0) for r in results]
     
     # 原有数据
     pf_values = [r.get('Pf', 0) for r in results]
@@ -401,37 +421,37 @@ def plot_results_streamlit(results):
     ax1.errorbar(uf_values, pf_values, 
                  yerr=[r.get('Pf_err', 0.1) for r in results],
                  xerr=[r.get('uf_err', 0.05) for r in results],
-                 fmt='bo', ecolor='r', capsize=5, label='Flyer data')
-    ax1.set_xlabel('Particle velocity Up (km/s)')
-    ax1.set_ylabel('Shock pressure P (GPa)')
-    ax1.set_title('Pressure-particle velocity relationship (with error range)')
+                 fmt='bo', ecolor='r', capsize=5, label='飞片数据')
+    ax1.set_xlabel('粒子速度 Up (km/s)')
+    ax1.set_ylabel('冲击压力 P (GPa)')
+    ax1.set_title('压力-粒子速度关系（含误差范围）')
     ax1.legend()
     ax1.grid(True)
     
     # 2. 温度-压力图
     ax2 = fig.add_subplot(222)
-    ax2.scatter(pf_values, tf_values, c='orange', label='Flyer temperature')
-    ax2.set_xlabel('Shock pressure P (GPa)')
-    ax2.set_ylabel('Shock temperature T (K)')
-    ax2.set_title('Temperature-pressure relationship')
+    ax2.scatter(pf_values, tf_values, c='orange', label='飞片温度')
+    ax2.set_xlabel('冲击压力 P (GPa)')
+    ax2.set_ylabel('冲击温度 T (K)')
+    ax2.set_title('温度-压力关系')
     ax2.legend()
     ax2.grid(True)
     
     # 3. 冲击波速度-粒子速度图
     ax3 = fig.add_subplot(223)
-    ax3.scatter(uf_values, df_values, c='blue', label='Flyer')
-    ax3.set_xlabel('Particle velocity Up (km/s)')
-    ax3.set_ylabel('Shock wave velocity Us (km/s)')
-    ax3.set_title('Shock wave velocity-particle velocity relationship')
+    ax3.scatter(uf_values, df_values, c='blue', label='飞片')
+    ax3.set_xlabel('粒子速度 Up (km/s)')
+    ax3.set_ylabel('冲击波速度 Us (km/s)')
+    ax3.set_title('冲击波速度-粒子速度关系')
     ax3.legend()
     ax3.grid(True)
     
     # 4. 密度-压力图
     ax4 = fig.add_subplot(224)
-    ax4.scatter(pf_values, rhf_values, c='green', label='Flyer')
-    ax4.set_xlabel('Shock pressure P (GPa)')
-    ax4.set_ylabel('Compressed density (g/cm³)')
-    ax4.set_title('Density-pressure relationship')
+    ax4.scatter(pf_values, rhf_values, c='green', label='飞片')
+    ax4.set_xlabel('冲击压力 P (GPa)')
+    ax4.set_ylabel('压缩后密度 (g/cm³)')
+    ax4.set_title('密度-压力关系')
     ax4.legend()
     ax4.grid(True)
     
@@ -457,13 +477,15 @@ def home_page():
         if st.button("手动输入参数"):
             st.session_state.page = "manual_mode"
 
-def database_mode_page():
+def database_mode_page(engine):
     st.title("数据库模式")
     st.write("从数据库加载材料数据，基于Hugoniot关系拟合参数并求解")
     
-    materials = get_all_materials()
+    materials = get_all_materials(engine)
     if not materials:
         st.error("数据库中没有可用材料")
+        if st.button("返回主页"):
+            st.session_state.page = "home"
         return
     
     col1, col2, col3 = st.columns(3)
@@ -475,10 +497,11 @@ def database_mode_page():
         sample_material = st.selectbox("样品材料", materials, key="sample_material")
     
     # 按需查询字段，减少数据传输
-    flyer_df = get_material_data(flyer_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho'])
-    base_df = get_material_data(base_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho'])
-    sample_df = get_material_data(sample_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho'])
+    flyer_df = get_material_data(engine, flyer_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho'])
+    base_df = get_material_data(engine, base_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho'])
+    sample_df = get_material_data(engine, sample_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho'])
     
+    # 使用缓存的拟合结果
     with st.spinner(f"拟合 {flyer_material} 数据..."):
         flyer_fit = fit_material_data(flyer_df, flyer_material)
     with st.spinner(f"拟合 {base_material} 数据..."):
@@ -496,7 +519,7 @@ def database_mode_page():
     """)
     if not flyer_df.empty:
         C0_flyer, S_flyer = fit_hugoniot(flyer_df)
-        fig = generate_shock_plots(flyer_df, C0_flyer, S_flyer)
+        fig = generate_shock_plots(flyer_df, C0_flyer, S_flyer, flyer_material)
         st.pyplot(fig)
         buf = save_plot_to_bytes(fig)
         st.download_button(
@@ -562,7 +585,7 @@ def database_mode_page():
                 val = get_input_streamlit(
                     label=var,
                     var_name=var,
-                    key=f"f_{var}",
+                    key_prefix=f"f_{var}",
                     default=default_val,
                     unit=var_units[var],
                     desc=var_descs[var]
@@ -588,7 +611,7 @@ def database_mode_page():
                 val = get_input_streamlit(
                     label=var,
                     var_name=var,
-                    key=f"b_{var}",
+                    key_prefix=f"b_{var}",
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Db", "C0b", "ub"] else 
@@ -627,7 +650,7 @@ def database_mode_page():
                 val = get_input_streamlit(
                     label=var,
                     var_name=var,
-                    key=f"s_{var}",
+                    key_prefix=f"s_{var}",
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Ds", "C0s", "us"] else 
@@ -783,7 +806,7 @@ def database_mode_page():
                     else:  # 其他参数
                         initial_guess[var] = 1.0
                 
-                # 使用数值方法求解（替代符号求解）
+                # 使用数值方法求解
                 solution = solve_numerically(substituted_eqs, {v:v for v in remaining_vars}, initial_guess)
                 
                 if solution:
@@ -804,7 +827,10 @@ def database_mode_page():
         if results:
             st.success(f"求解完成，共找到 {len(results)} 个解（结果基于理想冲击波假设，实际应用需验证）")
             
-            st.subheader("结果数据（单位：rho=g/cm³, D=km/s, u=km/s, P=GPa, T=K）")
+            # 保存结果到会话状态
+            st.session_state.current_results = results
+            
+            st.subheader("结果数据（单位：rho=g/cm³, D=km/s, u=km/s, P=GPa,GPa, T=K）")
             df = pd.DataFrame(results)
             st.dataframe(df)
             
@@ -831,14 +857,14 @@ def database_mode_page():
                 )
             
             if st.button("保存结果到数据库"):
-                save_results_to_db(results, sample_material)
+                save_results_to_db(engine, results, sample_material)
         else:
             st.warning("未找到有效解（请检查参数是否符合物理范围，如冲击波速度>粒子速度）")
     
     if st.button("返回主页"):
         st.session_state.page = "home"
 
-def manual_mode_page():
+def manual_mode_page(engine):
     st.title("手动输入模式")
     st.write("手动输入参数求解，适用于无数据库数据的场景")
     
@@ -862,19 +888,19 @@ def manual_mode_page():
     
     col1, col2, col3 = st.columns(3)
     with col1:
-        U_s = st.number_input("冲击波速度 Us (km/s)", min_value=0.01, value=5.0, help="需大于粒子速度Up")
-        Us_err = st.number_input("Us 误差 (km/s)", 0.1, help="测量误差")
+        U_s = st.number_input("冲击波速度 Us (km/s)", min_value=0.01, value=5.0, help="需大于粒子速度Up", key="us_input")
+        Us_err = st.number_input("Us 误差 (km/s)", 0.1, help="测量误差", key="us_err_input")
     with col2:
-        u_p = st.number_input("粒子速度 Up (km/s)", min_value=0.0, value=1.0, help="需小于冲击波速度Us")
-        Up_err = st.number_input("Up 误差 (km/s)", 0.05, help="测量误差")
+        u_p = st.number_input("粒子速度 Up (km/s)", min_value=0.0, value=1.0, help="需小于冲击波速度Us", key="up_input")
+        Up_err = st.number_input("Up 误差 (km/s)", 0.05, help="测量误差", key="up_err_input")
     with col3:
-        rho0 = st.number_input("初始密度 ρ0 (g/cm³)", min_value=0.01, value=8.96, help="如铜的初始密度约8.96 g/cm³")
-        rho0_err = st.number_input("ρ0 误差 (g/cm³)", 0.02, help="测量误差")
+        rho0 = st.number_input("初始密度 ρ0 (g/cm³)", min_value=0.01, value=8.96, help="如铜的初始密度约8.96 g/cm³", key="rho0_input")
+        rho0_err = st.number_input("ρ0 误差 (g/cm³)", 0.02, help="测量误差", key="rho0_err_input")
     
     # 存储计算结果用于保存
     calculation_result = None
     
-    if st.button("计算冲击波参数"):
+    if st.button("计算冲击波参数", key="calc_btn"):
         if U_s <= u_p:
             st.error("物理参数错误：冲击波速度Us必须大于粒子速度Up")
         else:
@@ -897,6 +923,9 @@ def manual_mode_page():
                 'Up_err': error_params['Up_err']
             }
             
+            # 保存到会话状态
+            st.session_state.current_results = calculation_result
+            
             st.success(f"""
             计算结果（基于理想冲击波假设）：
             - 冲击压力 P = {P:.2f} ± {error_params['P_err']:.2f} GPa
@@ -907,8 +936,8 @@ def manual_mode_page():
     
     # 保存输入数据到数据库
     if calculation_result:
-        if st.button("保存输入数据到数据库"):
-            save_input_data_to_db(calculation_result, material_name, exp_method)
+        if st.button("保存输入数据到数据库", key="save_manual_btn"):
+            save_input_data_to_db(engine, calculation_result, material_name, exp_method)
     
     # 参数输入
     variables = {
@@ -928,7 +957,7 @@ def manual_mode_page():
                 val = get_input_streamlit(
                     label=var,
                     var_name=var,
-                    key=var,
+                    key_prefix=f"manual_f_{var}",
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Df", "C0f", "uf", "w"] else 
@@ -959,7 +988,7 @@ def manual_mode_page():
                 val = get_input_streamlit(
                     label=var,
                     var_name=var,
-                    key=f"b_{var}",
+                    key_prefix=f"manual_b_{var}",
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Db", "C0b", "ub"] else 
@@ -989,7 +1018,7 @@ def manual_mode_page():
                 val = get_input_streamlit(
                     label=var,
                     var_name=var,
-                    key=f"s_{var}",
+                    key_prefix=f"manual_s_{var}",
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Ds", "C0s", "us"] else 
@@ -1009,7 +1038,6 @@ def manual_mode_page():
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
-                sym_vars[var] = symbols(var)
     
     # 参数组合限制
     range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
@@ -1021,10 +1049,11 @@ def manual_mode_page():
         "最大参数组合数（过大会影响速度）", 
         min_value=10, 
         max_value=1000, 
-        value=min(100, total_combinations)
+        value=min(100, total_combinations),
+        key="manual_max_comb"
     )
     
-    if st.button("开始求解方程组"):
+    if st.button("开始求解方程组", key="manual_solve_btn"):
         valid = True
         for var, val in input_params.items():
             if val is None:
@@ -1160,6 +1189,9 @@ def manual_mode_page():
         if results:
             st.success(f"求解完成，共找到 {len(results)} 个解")
             
+            # 保存到会话状态
+            st.session_state.current_results = results
+            
             st.subheader("结果数据")
             df = pd.DataFrame(results)
             st.dataframe(df)
@@ -1170,6 +1202,7 @@ def manual_mode_page():
                 data=csv,
                 file_name="solver_results.csv",
                 mime="text/csv",
+                key="manual_download_csv"
             )
             
             st.subheader("结果可视化")
@@ -1183,20 +1216,21 @@ def manual_mode_page():
                     label="下载图表",
                     data=buf2,
                     file_name="analysis_with_temp_error.png",
-                    mime="image/png"
+                    mime="image/png",
+                    key="manual_download_plot"
                 )
             
-            if st.button("保存计算结果到数据库"):
-                save_results_to_db(results, material_name)
+            if st.button("保存计算结果到数据库", key="manual_save_results"):
+                save_results_to_db(engine, results, material_name)
         else:
             st.warning("未找到有效解（请检查参数是否符合物理规律，如冲击波速度>粒子速度）")
     
-    if st.button("返回主页"):
+    if st.button("返回主页", key="manual_back_btn"):
         st.session_state.page = "home"
 
 def main():
-    if 'page' not in st.session_state:
-        st.session_state.page = "home"
+    # 初始化会话状态
+    init_session_state()
     
     st.set_page_config(
         page_title="冲击波参数计算与分析系统",
@@ -1204,12 +1238,20 @@ def main():
         layout="wide"
     )
     
+    # 创建数据库引擎（缓存）
+    engine = create_sql_engine()
+    
+    # 初始化数据库（仅一次）
+    if not st.session_state.db_initialized:
+        init_database(engine)
+    
+    # 根据会话状态显示对应页面
     if st.session_state.page == "home":
         home_page()
     elif st.session_state.page == "database_mode":
-        database_mode_page()
+        database_mode_page(engine)
     elif st.session_state.page == "manual_mode":
-        manual_mode_page()
+        manual_mode_page(engine)
 
 if __name__ == "__main__":
     main()
