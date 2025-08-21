@@ -548,9 +548,11 @@ def home_page():
     with col1:
         if st.button("使用数据库数据"):
             st.session_state.page = "database_mode"
+            st.rerun()  # 立即刷新页面
     with col2:
         if st.button("手动输入参数"):
             st.session_state.page = "manual_mode"
+            st.rerun()  # 立即刷新页面
 
 def database_mode_page():
     st.title("数据库模式")
@@ -930,6 +932,7 @@ def database_mode_page():
     
     if st.button("返回首页"):
         st.session_state.page = "home"
+        st.rerun()  # 立即刷新页面
 
 def manual_mode_page():
     st.title("手动输入模式")
@@ -1288,6 +1291,7 @@ def manual_mode_page():
     
     if st.button("返回首页"):
         st.session_state.page = "home"
+        st.rerun()  # 立即刷新页面
 
 def main():
     if 'page' not in st.session_state:
