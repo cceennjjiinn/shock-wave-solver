@@ -438,6 +438,16 @@ def plot_results_streamlit(results):
     plt.tight_layout()
     return fig
 
+# 页面切换回调函数
+def go_to_database_mode():
+    st.session_state.page = "database_mode"
+
+def go_to_manual_mode():
+    st.session_state.page = "manual_mode"
+
+def go_to_home():
+    st.session_state.page = "home"
+
 # 页面函数
 def home_page():
     st.title("冲击波参数计算与分析系统")
@@ -451,11 +461,9 @@ def home_page():
     
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("使用数据库数据"):
-            st.session_state.page = "database_mode"
+        st.button("使用数据库数据", on_click=go_to_database_mode)
     with col2:
-        if st.button("手动输入参数"):
-            st.session_state.page = "manual_mode"
+        st.button("手动输入参数", on_click=go_to_manual_mode)
 
 def database_mode_page():
     st.title("数据库模式")
@@ -835,8 +843,7 @@ def database_mode_page():
         else:
             st.warning("未找到有效解（请检查参数是否符合物理范围，如冲击波速度>粒子速度）")
     
-    if st.button("返回主页"):
-        st.session_state.page = "home"
+    st.button("返回主页", on_click=go_to_home)
 
 def manual_mode_page():
     st.title("手动输入模式")
@@ -860,55 +867,64 @@ def manual_mode_page():
     - 单位：ρ0(g/cm³), Us(km/s), Up(km/s) → 输出P(GPa)
     """)
     
+    # 添加会话状态存储计算结果
+    if 'calculation_result' not in st.session_state:
+        st.session_state.calculation_result = None
+    
     col1, col2, col3 = st.columns(3)
     with col1:
-        U_s = st.number_input("冲击波速度 Us (km/s)", min_value=0.01, value=5.0, help="需大于粒子速度Up")
-        Us_err = st.number_input("Us 误差 (km/s)", 0.1, help="测量误差")
+        U_s = st.number_input("冲击波速度 Us (km/s)", min_value=0.01, value=5.0, help="需大于粒子速度Up", key="us_input")
+        Us_err = st.number_input("Us 误差 (km/s)", 0.1, help="测量误差", key="us_err_input")
     with col2:
-        u_p = st.number_input("粒子速度 Up (km/s)", min_value=0.0, value=1.0, help="需小于冲击波速度Us")
-        Up_err = st.number_input("Up 误差 (km/s)", 0.05, help="测量误差")
+        u_p = st.number_input("粒子速度 Up (km/s)", min_value=0.0, value=1.0, help="需小于冲击波速度Us", key="up_input")
+        Up_err = st.number_input("Up 误差 (km/s)", 0.05, help="测量误差", key="up_err_input")
     with col3:
-        rho0 = st.number_input("初始密度 ρ0 (g/cm³)", min_value=0.01, value=8.96, help="如铜的初始密度约8.96 g/cm³")
-        rho0_err = st.number_input("ρ0 误差 (g/cm³)", 0.02, help="测量误差")
+        rho0 = st.number_input("初始密度 ρ0 (g/cm³)", min_value=0.01, value=8.96, help="如铜的初始密度约8.96 g/cm³", key="rho0_input")
+        rho0_err = st.number_input("ρ0 误差 (g/cm³)", 0.02, help="测量误差", key="rho0_err_input")
     
-    # 存储计算结果用于保存
-    calculation_result = None
-    
-    if st.button("计算冲击波参数"):
+    # 计算按钮回调
+    def calculate_callback():
         if U_s <= u_p:
             st.error("物理参数错误：冲击波速度Us必须大于粒子速度Up")
-        else:
-            P, V, rho, V_V0, T = calculate_shock_parameters(
-                U_s, u_p, rho0, gamma, Cv
-            )
+            return
             
-            # 计算误差
-            error_params = calculate_error(
-                params={'rho0': rho0, 'Us': U_s, 'Up': u_p},
-                param_errors={'rho0': rho0_err, 'Us': Us_err, 'Up': Up_err}
-            )
-            
-            calculation_result = {
-                'rho0': rho0, 'Us': U_s, 'Up': u_p, 
-                'P': P, 'V': V, 'rho': rho, 'V_V0': V_V0,
-                'gamma': gamma, 'T': T,
-                'P_err': error_params['P_err'],
-                'Us_err': error_params['Us_err'],
-                'Up_err': error_params['Up_err']
-            }
-            
-            st.success(f"""
-            计算结果（基于理想冲击波假设）：
-            - 冲击压力 P = {P:.2f} ± {error_params['P_err']:.2f} GPa
-            - 冲击温度 T = {T:.0f} K
-            - 压缩后密度 ρ = {rho:.2f} g/cm³
-            - 比容比 V/V0 = {V_V0:.4f}
-            """)
+        P, V, rho, V_V0, T = calculate_shock_parameters(
+            U_s, u_p, rho0, gamma, Cv
+        )
+        
+        # 计算误差
+        error_params = calculate_error(
+            params={'rho0': rho0, 'Us': U_s, 'Up': u_p},
+            param_errors={'rho0': rho0_err, 'Us': Us_err, 'Up': Up_err}
+        )
+        
+        st.session_state.calculation_result = {
+            'rho0': rho0, 'Us': U_s, 'Up': u_p, 
+            'P': P, 'V': V, 'rho': rho, 'V_V0': V_V0,
+            'gamma': gamma, 'T': T,
+            'P_err': error_params['P_err'],
+            'Us_err': error_params['Us_err'],
+            'Up_err': error_params['Up_err']
+        }
     
-    # 保存输入数据到数据库
-    if calculation_result:
-        if st.button("保存输入数据到数据库"):
-            save_input_data_to_db(calculation_result, material_name, exp_method)
+    st.button("计算冲击波参数", on_click=calculate_callback)
+    
+    # 显示计算结果
+    if st.session_state.calculation_result:
+        res = st.session_state.calculation_result
+        st.success(f"""
+        计算结果（基于理想冲击波假设）：
+        - 冲击压力 P = {res['P']:.2f} ± {res['P_err']:.2f} GPa
+        - 冲击温度 T = {res['T']:.0f} K
+        - 压缩后密度 ρ = {res['rho']:.2f} g/cm³
+        - 比容比 V/V0 = {res['V_V0']:.4f}
+        """)
+        
+        # 保存按钮回调
+        def save_callback():
+            save_input_data_to_db(st.session_state.calculation_result, material_name, exp_method)
+        
+        st.button("保存输入数据到数据库", on_click=save_callback)
     
     # 参数输入
     variables = {
@@ -1191,12 +1207,14 @@ def manual_mode_page():
         else:
             st.warning("未找到有效解（请检查参数是否符合物理规律，如冲击波速度>粒子速度）")
     
-    if st.button("返回主页"):
-        st.session_state.page = "home"
+    st.button("返回主页", on_click=go_to_home)
 
 def main():
+    # 初始化会话状态
     if 'page' not in st.session_state:
         st.session_state.page = "home"
+    if 'calculation_result' not in st.session_state:
+        st.session_state.calculation_result = None
     
     st.set_page_config(
         page_title="冲击波参数计算与分析系统",
@@ -1204,6 +1222,7 @@ def main():
         layout="wide"
     )
     
+    # 根据会话状态显示相应页面
     if st.session_state.page == "home":
         home_page()
     elif st.session_state.page == "database_mode":
