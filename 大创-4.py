@@ -162,8 +162,8 @@ def calculate_shock_parameters(U_s, u_p, rho0, gamma=2.0, Cv=385, T0=300):
     
     # 温度计算（Mie-Grüneisen方程近似）
     # 单位转换：1 GPa·cm³/g = 1e5 J/kg
-    E_shock = 0.5 * P * (1/rho0 - V) * 1e5  # 冲击内能 (J/kg)
-    T = T0 + (E_shock) / (Cv * (1 + gamma/2))  # 冲击温度 (K)
+    E_shock = 0.5 * P * (1/rho0 - V) * 1e6  # 冲击内能 (J/kg)
+    T = T0 + (E_shock) / (Cv * (1 + gamma/2))  # 冲击温度 (K)，基于Mie-Grüneisen方程简化形式（适用于弱冲击，忽略体积修正项）
     
     return P, V, rho, V_V0, T
 
