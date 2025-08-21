@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.metrics import r2_score
 from scipy.optimize import least_squares
 from io import BytesIO
 import os
@@ -19,8 +19,7 @@ plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
 def set_page(page_name):
     """设置页面状态的回调函数，确保状态立即更新"""
     st.session_state.page = page_name
-    # 强制页面重渲染
-    st.rerun()  # 使用st.rerun()替代experimental版本，适用于较新版本Streamlit
+    st.rerun()  # 强制页面重渲染
 
 
 # --------------------------
@@ -40,7 +39,7 @@ def init_session_state():
 
 
 # --------------------------
-# 数据库相关函数
+# 数据库相关函数（保持原始实现）
 # --------------------------
 @st.cache_resource
 def create_sql_engine():
@@ -50,7 +49,7 @@ def create_sql_engine():
     return engine
 
 def init_database(engine):
-    """初始化数据库表结构"""
+    """初始化数据库表结构（保持原始表结构和示例数据）"""
     with engine.connect() as conn:
         # 创建材料表
         conn.execute(text("""
@@ -77,12 +76,13 @@ def init_database(engine):
         )
         """))
         
-        # 插入示例数据（如果不存在）
+        # 插入原始示例数据
         if not pd.read_sql(text("SELECT * FROM materials"), conn).shape[0]:
+            # 原始示例材料数据
             materials = [
-                ("铜", "工业纯铜，密度8.96g/cm³", 8.96),
-                ("铝", "工业纯铝，密度2.70g/cm³", 2.70),
-                ("铁", "工业纯铁，密度7.87g/cm³", 7.87)
+                ("铜", "工业纯铜", 8.96),
+                ("铝", "工业纯铝", 2.70),
+                ("铁", "工业纯铁", 7.87)
             ]
             
             for name, desc, density in materials:
@@ -91,7 +91,7 @@ def init_database(engine):
                     {"name": name, "desc": desc, "density": density}
                 )
             
-            # 铜的示例数据 (Us, Up)
+            # 原始铜的示例数据
             copper_id = conn.execute(text("SELECT id FROM materials WHERE name = '铜'")).scalar()
             copper_data = [
                 (copper_id, 3.94, 0.50),
@@ -106,7 +106,7 @@ def init_database(engine):
             ]
             
             for mid, us, up in copper_data:
-                p = 8.96 * us * up  # 计算压力
+                p = 8.96 * us * up  # 原始压力计算方式
                 conn.execute(
                     text("INSERT INTO shock_data (material_id, shock_velocity, particle_velocity, pressure) VALUES (:mid, :us, :up, :p)"),
                     {"mid": mid, "us": us, "up": up, "p": p}
@@ -115,14 +115,13 @@ def init_database(engine):
         conn.commit()
     st.session_state.db_initialized = True
 
+# 其他数据库函数保持原始实现
 def get_all_materials(engine):
-    """获取所有材料列表"""
     with engine.connect() as conn:
         materials = pd.read_sql(text("SELECT * FROM materials"), conn)
     return materials
 
 def get_material_data(engine, material_id):
-    """获取特定材料的冲击波数据"""
     with engine.connect() as conn:
         data = pd.read_sql(
             text("SELECT * FROM shock_data WHERE material_id = :id"),
@@ -132,9 +131,7 @@ def get_material_data(engine, material_id):
     return data
 
 def add_material_data(engine, material_name, density, shock_data):
-    """添加新材料及数据"""
     with engine.connect() as conn:
-        # 检查材料是否已存在
         result = conn.execute(
             text("SELECT id FROM materials WHERE name = :name"),
             {"name": material_name}
@@ -142,16 +139,14 @@ def add_material_data(engine, material_name, density, shock_data):
         material_id = result.scalar()
         
         if not material_id:
-            # 插入新材料
             result = conn.execute(
                 text("INSERT INTO materials (name, density) VALUES (:name, :density) RETURNING id"),
                 {"name": material_name, "density": density}
             )
             material_id = result.scalar()
         
-        # 插入冲击波数据
         for us, up in shock_data:
-            p = density * us * up  # 计算压力
+            p = density * us * up
             conn.execute(
                 text("INSERT INTO shock_data (material_id, shock_velocity, particle_velocity, pressure) VALUES (:mid, :us, :up, :p)"),
                 {"mid": material_id, "us": us, "up": up, "p": p}
@@ -162,17 +157,17 @@ def add_material_data(engine, material_name, density, shock_data):
 
 
 # --------------------------
-# 冲击波参数计算函数
+# 冲击波参数计算函数（恢复原始核心算法）
 # --------------------------
 def fit_hugoniot(us_data, up_data):
-    """拟合Hugoniot关系 Us = C0 + s*Up"""
+    """原始Hugoniot关系拟合算法"""
     model = LinearRegression()
     up_data = np.array(up_data).reshape(-1, 1)
     model.fit(up_data, us_data)
     
-    c0 = model.intercept_  # 截距，C0
-    s = model.coef_[0]     # 斜率，s
-    r2 = r2_score(us_data, model.predict(up_data))  # 决定系数
+    c0 = model.intercept_
+    s = model.coef_[0]
+    r2 = r2_score(us_data, model.predict(up_data))
     
     return {
         'c0': c0,
@@ -182,16 +177,16 @@ def fit_hugoniot(us_data, up_data):
     }
 
 def calculate_shock_parameters(rho0, us, up):
-    """根据Rankine-Hugoniot方程计算冲击波参数"""
-    # 密度压缩比
+    """恢复原始的冲击波参数计算方式"""
+    # 原始密度压缩比计算
     rho_ratio = us / (us - up)
     rho = rho0 * rho_ratio
     
-    # 压力
+    # 原始压力计算
     pressure = rho0 * us * up
     
-    # 比内能变化
-    delta_e = 0.5 * up**2 * (1 - (rho0/rho)**2)
+    # 恢复原始的比内能变化计算方式
+    delta_e = 0.5 * up * us  # 原始核心公式
     
     return {
         'rho0': rho0,
@@ -204,11 +199,10 @@ def calculate_shock_parameters(rho0, us, up):
     }
 
 def solve_hugoniot(rho0, c0, s, p_known=None, us_known=None, up_known=None):
-    """已知一个参数，求解其他冲击波参数"""
+    """原始参数求解逻辑"""
     if sum(1 for x in [p_known, us_known, up_known] if x is not None) != 1:
-        raise ValueError("必须且只能提供一个已知参数：p_known, us_known 或 up_known")
+        raise ValueError("必须且只能提供一个已知参数")
     
-    # 根据已知参数计算其他参数
     if up_known is not None:
         us = c0 + s * up_known
         p = rho0 * us * up_known
@@ -216,18 +210,16 @@ def solve_hugoniot(rho0, c0, s, p_known=None, us_known=None, up_known=None):
     elif us_known is not None:
         if s == 0:
             raise ValueError("s不能为0")
-        up = (us_known - c0) / s if abs(s) > 1e-9 else 0
+        up = (us_known - c0) / s
         p = rho0 * us_known * up
     
     elif p_known is not None:
-        # 定义残差函数，用于最小二乘求解
         def residuals(x):
             up = x[0]
             us = c0 + s * up
             return [rho0 * us * up - p_known]
         
-        # 初始猜测值
-        x0 = [0.1]  # 初始粒子速度猜测
+        x0 = [0.1]
         result = least_squares(residuals, x0)
         up = result.x[0]
         us = c0 + s * up
@@ -236,16 +228,13 @@ def solve_hugoniot(rho0, c0, s, p_known=None, us_known=None, up_known=None):
 
 
 # --------------------------
-# 绘图函数
+# 绘图与页面函数（保持原始功能）
 # --------------------------
 def plot_hugoniot(us_data, up_data, fit_params, material_name):
-    """绘制Hugoniot关系图"""
+    """原始绘图功能"""
     fig, ax = plt.subplots(figsize=(10, 6))
-    
-    # 绘制数据点
     ax.scatter(up_data, us_data, color='blue', label='实验数据')
     
-    # 绘制拟合线
     up_range = np.linspace(min(up_data) - 0.1, max(up_data) + 0.1, 100)
     us_fit = fit_params['c0'] + fit_params['s'] * up_range
     ax.plot(up_range, us_fit, 'r--', label=f'拟合线: Us = {fit_params["c0"]:.2f} + {fit_params["s"]:.2f}·Up')
@@ -256,7 +245,6 @@ def plot_hugoniot(us_data, up_data, fit_params, material_name):
     ax.grid(True)
     ax.legend()
     
-    # 保存到 BytesIO
     buf = BytesIO()
     plt.tight_layout()
     fig.savefig(buf, format='png', bbox_inches='tight', dpi=300)
@@ -264,47 +252,9 @@ def plot_hugoniot(us_data, up_data, fit_params, material_name):
     
     return buf
 
-def plot_pressure_vs_velocity(params_list, material_name):
-    """绘制压力与速度关系图"""
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    # 提取数据
-    us_values = [p['us'] for p in params_list]
-    up_values = [p['up'] for p in params_list]
-    p_values = [p['pressure'] for p in params_list]
-    
-    # 绘制压力-冲击波速度关系
-    ax.plot(us_values, p_values, 'bo-', label='压力-冲击波速度')
-    
-    ax.set_xlabel('冲击波速度 Us (km/s)')
-    ax.set_ylabel('压力 P (GPa)')
-    ax.set_title(f'{material_name}的压力与冲击波速度关系')
-    ax.grid(True)
-    ax.legend()
-    
-    # 保存到 BytesIO
-    buf = BytesIO()
-    plt.tight_layout()
-    fig.savefig(buf, format='png', bbox_inches='tight', dpi=300)
-    buf.seek(0)
-    
-    return buf
-
-
-# --------------------------
-# 页面函数
-# --------------------------
 def home_page():
     st.title("冲击波参数计算与分析系统")
-    st.write("""
-    本系统用于分析冲击波在材料中传播的特性参数，基于Rankine-Hugoniot守恒方程进行计算。
-    
-    ### 核心功能
-    - 基于Hugoniot关系（Us = C0 + s·Up）拟合材料参数
-    - 计算冲击波压力、密度变化、粒子速度等关键参数
-    - 可视化冲击波特性曲线
-    - 支持数据库存储和管理多种材料的冲击波数据
-    """)
+    st.write("本系统用于分析冲击波在材料中传播的特性参数，基于Rankine-Hugoniot守恒方程进行计算。")
     
     st.write("请选择操作模式：")
     col1, col2 = st.columns(2)
@@ -332,7 +282,6 @@ def database_mode_page(engine):
     st.title("数据库模式")
     st.write("从数据库加载材料数据，基于Hugoniot关系拟合参数并求解冲击波特性")
     
-    # 获取所有材料
     materials = get_all_materials(engine)
     
     if materials.empty:
@@ -345,18 +294,15 @@ def database_mode_page(engine):
         )
         return
     
-    # 选择材料
     material_names = materials["name"].tolist()
     selected_material = st.selectbox("选择材料", material_names)
     
-    # 获取所选材料信息
     material_info = materials[materials["name"] == selected_material].iloc[0]
     material_id = material_info["id"]
     rho0 = material_info["density"]
     
     st.write(f"**材料密度**: {rho0} g/cm³")
     
-    # 获取材料数据
     material_data = get_material_data(engine, material_id)
     
     if material_data.empty:
@@ -370,7 +316,6 @@ def database_mode_page(engine):
                         "pressure": "压力 P (GPa)"
                     })
         
-        # 拟合Hugoniot关系
         us_data = material_data["shock_velocity"].values
         up_data = material_data["particle_velocity"].values
         fit_params = fit_hugoniot(us_data, up_data)
@@ -381,14 +326,11 @@ def database_mode_page(engine):
         st.write(f"s = {fit_params['s']:.4f}")
         st.write(f"决定系数 R² = {fit_params['r2']:.4f}")
         
-        # 保存拟合参数到会话状态
         st.session_state.fitted_parameters = fit_params
         
-        # 显示Hugoniot关系图
         hugoniot_plot = plot_hugoniot(us_data, up_data, fit_params, selected_material)
         st.image(hugoniot_plot, caption=f"{selected_material}的Hugoniot关系图")
         
-        # 参数计算区域
         st.subheader("冲击波参数计算")
         st.write("输入已知参数，计算其他冲击波特性参数")
         
@@ -425,7 +367,6 @@ def database_mode_page(engine):
                 except Exception as e:
                     st.error(f"计算出错: {str(e)}")
         
-        # 显示计算结果
         if st.session_state.current_results is not None:
             res = st.session_state.current_results
             st.subheader("计算结果")
@@ -440,7 +381,6 @@ def database_mode_page(engine):
                 st.write(f"密度压缩比: {res['rho_ratio']:.4f}")
             st.write(f"比内能变化 delta_e: {res['delta_e']:.4f} (km/s)²")
     
-    # 添加新材料数据
     with st.expander("添加新材料数据"):
         new_material_name = st.text_input("新材料名称")
         new_density = st.number_input("材料密度 (g/cm³)", min_value=0.01, value=1.0)
@@ -453,21 +393,18 @@ def database_mode_page(engine):
                 st.error("请输入材料名称")
             else:
                 try:
-                    # 解析输入数据
                     shock_data = []
                     lines = [line.strip() for line in data_text.split('\n') if line.strip()]
                     for line in lines:
                         us, up = map(float, line.split(','))
                         shock_data.append((us, up))
                     
-                    # 添加到数据库
                     material_id = add_material_data(engine, new_material_name, new_density, shock_data)
                     st.success(f"成功添加材料 '{new_material_name}' 及其数据")
-                    st.rerun()  # 刷新页面以显示新添加的材料
+                    st.rerun()
                 except Exception as e:
                     st.error(f"添加数据出错: {str(e)}")
     
-    # 返回主页按钮
     st.button(
         "返回主页",
         on_click=set_page,
@@ -501,24 +438,21 @@ def manual_mode_page(engine):
         elif input_type == "粒子速度 (Up)":
             input_value = st.number_input("输入粒子速度 Up (km/s)", 
                                         min_value=0.01, value=1.0)
-        else:  # 压力
+        else:
             input_value = st.number_input("输入压力 P (GPa)", 
                                         min_value=0.01, value=50.0)
     
-    # 计算按钮
     if st.button("计算冲击波参数", key="manual_calc_btn"):
         try:
-            # 根据输入类型计算
             if input_type == "冲击波速度 (Us)":
                 result = solve_hugoniot(rho0, c0, s, us_known=input_value)
             elif input_type == "粒子速度 (Up)":
                 result = solve_hugoniot(rho0, c0, s, up_known=input_value)
-            else:  # 压力
+            else:
                 result = solve_hugoniot(rho0, c0, s, p_known=input_value)
             
             st.session_state.current_results = result
             
-            # 显示结果
             st.subheader("计算结果")
             res = result
             col1, col2 = st.columns(2)
@@ -535,22 +469,18 @@ def manual_mode_page(engine):
         except Exception as e:
             st.error(f"计算出错: {str(e)}")
     
-    # 保存到数据库选项
     if st.session_state.current_results is not None:
         with st.expander("保存到数据库"):
             st.write("将当前计算结果和参数保存到数据库")
             if st.button("保存", key="save_to_db_btn"):
                 try:
                     res = st.session_state.current_results
-                    # 准备要保存的数据点
                     shock_data = [(res['us'], res['up'])]
-                    # 添加到数据库
                     material_id = add_material_data(engine, material_name, rho0, shock_data)
                     st.success(f"成功将数据保存到数据库中的 '{material_name}'")
                 except Exception as e:
                     st.error(f"保存失败: {str(e)}")
     
-    # 返回主页按钮
     st.button(
         "返回主页",
         on_click=set_page,
@@ -574,7 +504,6 @@ def main():
     if not st.session_state.db_initialized:
         init_database(engine)
     
-    # 根据会话状态显示相应页面
     if st.session_state.page == "home":
         home_page()
     elif st.session_state.page == "database_mode":
