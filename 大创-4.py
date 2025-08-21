@@ -186,15 +186,15 @@ def fit_hugoniot(df):
     return C0, S
 
 @st.cache_data(ttl=3600)  # Cache fitting results
-def fit_material_data(df, material_name):
+def fit_material_data(df, material_name, material_type):
     if df is None or df.empty:
-        st.warning(f"No data for material '{material_name}'")
+        st.warning(f"No data for {material_type.lower()} material '{material_name}'")
         return None
     
     # Filter outliers
     df = df[(df['Us'] > df['Up']) & (df['Us'] > 0) & (df['Up'] >= 0)]
     if len(df) < 2:
-        st.warning(f"Insufficient valid data for material '{material_name}', cannot fit")
+        st.warning(f"Insufficient valid data for {material_type.lower()} material '{material_name}', cannot fit")
         return None
     
     X = df['Up'].values.reshape(-1, 1)
@@ -205,7 +205,7 @@ def fit_material_data(df, material_name):
     
     # Fitting parameters
     C0 = model.intercept_    # Bulk sound speed (km/s)
-    S = model.coef_[0]       # Hugoniot parameter S (previously lambda_val, renamed for clarity)
+    S = model.coef_[0]       # Hugoniot parameter S
     y_pred = model.predict(X)
     
     # Fitting error calculation
@@ -213,12 +213,12 @@ def fit_material_data(df, material_name):
     rmse = np.sqrt(mean_squared_error(y, y_pred))  # Root mean square error
     mae = np.mean(np.abs(y - y_pred))              # Mean absolute error
     
-    st.info(f"{material_name} Fitting result: Us = {C0:.4f} + {S:.4f}*Up")
+    st.info(f"{material_type} Material {material_name} Fitting result: Us = {C0:.4f} + {S:.4f}*Up")
     st.info(f"Fitting error: R² = {r2:.4f}, RMSE = {rmse:.4f} km/s, MAE = {mae:.4f} km/s")
     st.info(f"Average parameters: ρ₀ = {df['rho0'].mean():.4f} g/cm³, Average pressure = {df['P'].mean():.4f} GPa")
     
     return {
-        "C0": C0, "S": S, "rho0": df['rho0'].mean(),  # Correct parameter name from lambda to S
+        "C0": C0, "S": S, "rho0": df['rho0'].mean(),
         "r2": r2, "rmse": rmse, "mae": mae
     }
 
@@ -341,14 +341,16 @@ def solve_numerically(eqs, sym_vars, initial_guess):
         return {str(var_list[i]): float(result.x[i]) for i in range(len(result.x))}
     return None
 
-# Shock wave relation plots
+# Shock wave relation plots - modified to include material type in title
 @st.cache_data(ttl=3600)  # Cache plot results
-def generate_shock_plots(df, C0, S):
+def generate_shock_plots(df, C0, S, material_name, material_type):
     # Sample data when the amount is large
     if len(df) > 1000:
         df = df.sample(1000)
         
     fig, axs = plt.subplots(2, 2, figsize=(12, 10))
+    # Add main title with material type and name
+    fig.suptitle(f'{material_type} Material: {material_name} - Shock Wave Relationships', fontsize=16)
     
     # Us vs Up
     axs[0, 0].scatter(df['Up'], df['Us'], label='Experimental data')
@@ -397,6 +399,23 @@ def save_plot_to_bytes(fig):
     fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')  # Reduce resolution for speed
     buf.seek(0)
     return buf
+
+# Helper function to display material plots
+def display_material_plots(df, material_name, material_type):
+    if not df.empty:
+        with st.expander(f"View {material_type} Material {material_name} Shock Wave Plots", expanded=True):
+            C0, S = fit_hugoniot(df)
+            fig = generate_shock_plots(df, C0, S, material_name, material_type)
+            st.pyplot(fig)
+            buf = save_plot_to_bytes(fig)
+            st.download_button(
+                label=f"Download {material_type.lower()} {material_name} shock wave plots",
+                data=buf,
+                file_name=f"{material_type.lower()}_{material_name}_shock_relations.png",
+                mime="image/png"
+            )
+    else:
+        st.info(f"No available data to generate {material_type.lower()} material plots for {material_name}")
 
 # Plotting function
 @st.cache_data(ttl=3600)  # Cache plot results
@@ -504,14 +523,15 @@ def database_mode_page():
     base_df = get_material_data(base_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho'])
     sample_df = get_material_data(sample_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho'])
     
-    with st.spinner(f"Fitting {flyer_material} data..."):
-        flyer_fit = fit_material_data(flyer_df, flyer_material)
-    with st.spinner(f"Fitting {base_material} data..."):
-        base_fit = fit_material_data(base_df, base_material)
-    with st.spinner(f"Fitting {sample_material} data..."):
-        sample_fit = fit_material_data(sample_df, sample_material)
+    # Fit data for each material type with clear labeling
+    with st.spinner(f"Fitting flyer material {flyer_material} data..."):
+        flyer_fit = fit_material_data(flyer_df, flyer_material, "Flyer")
+    with st.spinner(f"Fitting base material {base_material} data..."):
+        base_fit = fit_material_data(base_df, base_material, "Base")
+    with st.spinner(f"Fitting sample material {sample_material} data..."):
+        sample_fit = fit_material_data(sample_df, sample_material, "Sample")
     
-    # Shock wave parameter analysis
+    # Shock wave parameter analysis section with separate plots for each material
     st.subheader("Shock Wave Parameter Analysis (Hugoniot Relation)")
     st.caption("""
     Analysis based on linear Hugoniot relation Us = C0 + S·Up, where:
@@ -519,20 +539,14 @@ def database_mode_page():
     - S: Hugoniot parameter (describing the rate of change of shock wave velocity with particle velocity, dimensionless)
     - Application note: Deviations may occur at high pressures (e.g., >100 GPa), phase transitions or nonlinear terms need to be considered
     """)
-    if not flyer_df.empty:
-        C0_flyer, S_flyer = fit_hugoniot(flyer_df)
-        fig = generate_shock_plots(flyer_df, C0_flyer, S_flyer)
-        st.pyplot(fig)
-        buf = save_plot_to_bytes(fig)
-        st.download_button(
-            label="Download shock wave relation plot",
-            data=buf,
-            file_name=f"{flyer_material}_shock_relations.png",
-            mime="image/png"
-        )
+    
+    # Display separate plots for each material type
+    display_material_plots(flyer_df, flyer_material, "Flyer")
+    display_material_plots(base_df, base_material, "Base")
+    display_material_plots(sample_df, sample_material, "Sample")
     
     default_params = {"f": flyer_fit, "b": base_fit, "s": sample_fit}
-    # Correct parameter names nubdaf/nubdab/nubdas to Sf/Sb/Ss for clearer representation of Hugoniot parameter S
+    # Parameter definitions
     variables = {
         "f": ["rh0f", "rhf", "Df", "C0f", "Sf", "E0f", "Ef", "uf", "w", "Pf", "gammaf", "Tf"],
         "b": ["rh0b", "rhb", "Db", "C0b", "Sb", "E0b", "Eb", "ub", "Pb", "gammab", "Tb"],
@@ -565,7 +579,7 @@ def database_mode_page():
             "Df": "km/s",
             "C0f": "km/s",
             "Sf": "dimensionless",
-            "E0f": "GPa·cm³/g",  # Correct energy unit from GPa to GPa·cm³/g
+            "E0f": "GPa·cm³/g",
             "Ef": "GPa·cm³/g",
             "uf": "km/s",
             "w": "km/s",
@@ -582,7 +596,7 @@ def database_mode_page():
                     elif var == "C0f":
                         default_val = default_params["f"]["C0"]
                     elif var == "Sf":
-                        default_val = default_params["f"]["S"]  # Correct parameter name
+                        default_val = default_params["f"]["S"]
                 elif var == "gammaf":
                     default_val = 2.0  # Default Grüneisen coefficient
                 val = get_input_streamlit(
@@ -597,7 +611,7 @@ def database_mode_page():
                 sym_vars[var] = symbols(var)
     
     # Base parameters
-    with st.expander(f"{base_material} Base Parameters", expanded=True):
+    with st.expander(f"{base_material} Base Parameters_material} Base Parameters", expanded=True):
         cols = st.columns(3)
         for i, var in enumerate(variables["b"]):
             with cols[i % 3]:
@@ -608,7 +622,7 @@ def database_mode_page():
                     elif var == "C0b":
                         default_val = default_params["b"]["C0"]
                     elif var == "Sb":
-                        default_val = default_params["b"]["S"]  # Correct parameter name
+                        default_val = default_params["b"]["S"]
                 elif var == "gammab":
                     default_val = 2.0  # Default Grüneisen coefficient
                 val = get_input_streamlit(
@@ -618,14 +632,14 @@ def database_mode_page():
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Db", "C0b", "ub"] else 
-                         "GPa·cm³/g" if var in ["E0b", "Eb"] else  # Correct energy unit
+                         "GPa·cm³/g" if var in ["E0b", "Eb"] else
                          "GPa" if var == "Pb" else 
                          "K" if var == "Tb" else "dimensionless",
                     desc="Initial density" if var == "rh0b" else
                          "Compressed density" if var == "rhb" else
                          "Shock wave velocity" if var == "Db" else
                          "Bulk sound speed" if var == "C0b" else
-                         "Hugoniot parameter" if var == "Sb" else  # Correct parameter description
+                         "Hugoniot parameter" if var == "Sb" else
                          "Initial internal energy density" if var == "E0b" else
                          "Compressed internal energy density" if var == "Eb" else
                          "Particle velocity" if var == "ub" else
@@ -648,7 +662,7 @@ def database_mode_page():
                     elif var == "C0s":
                         default_val = default_params["s"]["C0"]
                     elif var == "Ss":
-                        default_val = default_params["s"]["S"]  # Correct parameter name
+                        default_val = default_params["s"]["S"]
                 elif var == "gammas":
                     default_val = 2.0  # Default Grüneisen coefficient
                 val = get_input_streamlit(
@@ -658,14 +672,14 @@ def database_mode_page():
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Ds", "C0s", "us"] else 
-                         "GPa·cm³/g" if var in ["E0s", "Es"] else  # Correct energy unit
+                         "GPa·cm³/g" if var in ["E0s", "Es"] else
                          "GPa" if var == "Ps" else 
                          "K" if var == "Ts" else "dimensionless",
                     desc="Initial density" if var == "rh0s" else
                          "Compressed density" if var == "rhs" else
                          "Shock wave velocity" if var == "Ds" else
                          "Bulk sound speed" if var == "C0s" else
-                         "Hugoniot parameter" if var == "Ss" else  # Correct parameter description
+                         "Hugoniot parameter" if var == "Ss" else
                          "Initial internal energy density" if var == "E0s" else
                          "Compressed internal energy density" if var == "Es" else
                          "Particle velocity" if var == "us" else
@@ -720,7 +734,7 @@ def database_mode_page():
                 
             current_subs = {sym_vars[k]: v for k, v in combo}
             
-            # System of equations, corrected parameter names nubdaf/nubdab to Sf/Sb
+            # System of equations
             eqs = [
                 # Flyer mass conservation: rho0f·Df = rhf·(Df - uf)
                 Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
@@ -811,7 +825,7 @@ def database_mode_page():
                     else:  # Other parameters
                         initial_guess[var] = 1.0
                 
-                # Solve using numerical method (replace symbolic solving)
+                # Solve using numerical method
                 solution = solve_numerically(substituted_eqs, {v:v for v in remaining_vars}, initial_guess)
                 
                 if solution:
@@ -938,7 +952,7 @@ def manual_mode_page():
         if st.button("Save input data to database"):
             save_input_data_to_db(calculation_result, material_name, exp_method)
     
-    # Parameter input, corrected parameter names nubdaf/nubdab/nubdas to Sf/Sb/Ss
+    # Parameter input
     variables = {
         "f": ["rh0f", "rhf", "Df", "C0f", "Sf", "E0f", "Ef", "uf", "w", "Pf", "gammaf", "Tf"],
         "b": ["rh0b", "rhb", "Db", "C0b", "Sb", "E0b", "Eb", "ub", "Pb", "gammab", "Tb"],
@@ -960,14 +974,14 @@ def manual_mode_page():
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Df", "C0f", "uf", "w"] else 
-                         "GPa·cm³/g" if var in ["E0f", "Ef"] else  # Correct energy unit
+                         "GPa·cm³/g" if var in ["E0f", "Ef"] else
                          "GPa" if var == "Pf" else
                          "K" if var == "Tf" else "dimensionless",
                     desc="Flyer initial density" if var == "rh0f" else
                          "Flyer compressed density" if var == "rhf" else
                          "Flyer shock wave velocity" if var == "Df" else
                          "Flyer bulk sound speed" if var == "C0f" else
-                         "Flyer Hugoniot parameter S" if var == "Sf" else  # Correct parameter description
+                         "Flyer Hugoniot parameter S" if var == "Sf" else
                          "Flyer initial internal energy density" if var == "E0f" else
                          "Flyer compressed internal energy density" if var == "Ef" else
                          "Flyer particle velocity" if var == "uf" else
@@ -992,14 +1006,14 @@ def manual_mode_page():
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Db", "C0b", "ub"] else 
-                         "GPa·cm³/g" if var in ["E0b", "Eb"] else  # Correct energy unit
+                         "GPa·cm³/g" if var in ["E0b", "Eb"] else
                          "GPa" if var == "Pb" else
                          "K" if var == "Tb" else "dimensionless",
                     desc="Base initial density" if var == "rh0b" else
                          "Base compressed density" if var == "rhb" else
                          "Base shock wave velocity" if var == "Db" else
                          "Base bulk sound speed" if var == "C0b" else
-                         "Base Hugoniot parameter S" if var == "Sb" else  # Correct parameter description
+                         "Base Hugoniot parameter S" if var == "Sb" else
                          "Base initial internal energy density" if var == "E0b" else
                          "Base compressed internal energy density" if var == "Eb" else
                          "Base particle velocity" if var == "ub" else
@@ -1023,14 +1037,14 @@ def manual_mode_page():
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Ds", "C0s", "us"] else 
-                         "GPa·cm³/g" if var in ["E0s", "Es"] else  # Correct energy unit
+                         "GPa·cm³/g" if var in ["E0s", "Es"] else
                          "GPa" if var == "Ps" else
                          "K" if var == "Ts" else "dimensionless",
                     desc="Sample initial density" if var == "rh0s" else
                          "Sample compressed density" if var == "rhs" else
                          "Sample shock wave velocity" if var == "Ds" else
                          "Sample bulk sound speed" if var == "C0s" else
-                         "Sample Hugoniot parameter S" if var == "Ss" else  # Correct parameter description
+                         "Sample Hugoniot parameter S" if var == "Ss" else
                          "Sample initial internal energy density" if var == "E0s" else
                          "Sample compressed internal energy density" if var == "Es" else
                          "Sample particle velocity" if var == "us" else
@@ -1039,7 +1053,7 @@ def manual_mode_page():
                          "Sample shock temperature"
                 )
                 input_params[var] = val
-                sym_vars[var] = symbols(var)  # Remove duplicate variable definitions
+                sym_vars[var] = symbols(var)
     
     # Parameter combination limit
     range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
@@ -1096,7 +1110,7 @@ def manual_mode_page():
             except:
                 pass
             
-            # System of equations definition, corrected parameter names nubdaf/nubdab to Sf/Sb
+            # System of equations definition
             eqs = [
                 Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
                 Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
@@ -1119,7 +1133,6 @@ def manual_mode_page():
                     current_subs.get(sym_vars['E0b'], sym_vars['E0b']) == current_subs.get(sym_vars['E0s'], sym_vars['E0s'])
                 ])
             except TypeError:
-                cond = False
                 cond = False
                 
             if cond:
