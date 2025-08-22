@@ -740,17 +740,17 @@ def database_mode_page():
                              "GPa·cm³/g" if var in ["E0b", "Eb"] else
                              "GPa" if var == "Pb" else 
                              "K" if var == "Tb" else "无量纲",
-                        desc="初始密度" if var == "rh0b" else
-                             "压缩密度" if var == "rhb" else
-                             "冲击波速度" if var == "Db" else
-                             "体声速" if var == "C0b" else
-                             "Hugoniot参数" if var == "Sb" else
-                             "初始内能密度" if var == "E0b" else
-                             "压缩内能密度" if var == "Eb" else
-                             "粒子速度" if var == "ub" else
-                             "冲击压力" if var == "Pb" else
-                             "格吕奈森系数" if var == "gammab" else
-                             "冲击温度"
+                        desc=("基板初始密度" if var == "rh0b" else
+                             "基板压缩密度" if var == "rhb" else
+                             "基板冲击波速度" if var == "Db" else
+                             "基板体声速" if var == "C0b" else
+                             "基板Hugoniot参数" if var == "Sb" else
+                             "基板初始内能密度" if var == "E0b" else
+                             "基板压缩内能密度" if var == "Eb" else
+                             "基板粒子速度" if var == "ub" else
+                             "基板冲击压力" if var == "Pb" else
+                             "基板格吕奈森系数" if var == "gammab" else
+                             "基板冲击温度")
                     )
                     input_params[var] = val
                     sym_vars[var] = symbols(var)
@@ -788,17 +788,17 @@ def database_mode_page():
                              "GPa·cm³/g" if var in ["E0s", "Es"] else
                              "GPa" if var == "Ps" else 
                              "K" if var == "Ts" else "无量纲",
-                        desc="初始密度" if var == "rh0s" else
-                             "压缩密度" if var == "rhs" else
-                             "冲击波速度" if var == "Ds" else
-                             "体声速" if var == "C0s" else
-                             "Hugoniot参数" if var == "Ss" else
-                             "初始内能密度" if var == "E0s" else
-                             "压缩内能密度" if var == "Es" else
-                             "粒子速度" if var == "us" else
-                             "冲击压力" if var == "Ps" else
-                             "格吕奈森系数" if var == "gammas" else
-                             "冲击温度"
+                        desc="样品初始密度" if var == "rh0s" else
+                             "样品压缩密度" if var == "rhs" else
+                             "样品冲击波速度" if var == "Ds" else
+                             "样品体声速" if var == "C0s" else
+                             "样品Hugoniot参数" if var == "Ss" else
+                             "样品初始内能密度" if var == "E0s" else
+                             "样品压缩内能密度" if var == "Es" else
+                             "样品粒子速度" if var == "us" else
+                             "样品冲击压力" if var == "Ps" else
+                             "样品格吕奈森系数" if var == "gammas" else
+                             "样品冲击温度"
                     )
                     input_params[var] = val
                     sym_vars[var] = symbols(var)
@@ -1155,7 +1155,7 @@ def manual_mode_page():
                              "GPa·cm³/g" if var in ["E0b", "Eb"] else
                              "GPa" if var == "Pb" else 
                              "K" if var == "Tb" else "无量纲",
-                        desc="基板初始密度" if var == "rh0b" else
+                        desc=("基板初始密度" if var == "rh0b" else
                              "基板压缩密度" if var == "rhb" else
                              "基板冲击波速度" if var == "Db" else
                              "基板体声速" if var == "C0b" else
@@ -1164,12 +1164,11 @@ def manual_mode_page():
                              "基板压缩内能密度" if var == "Eb" else
                              "基板粒子速度" if var == "ub" else
                              "基板冲击压力" if var == "Pb" else
-                             "基板格吕奈森系数" if var ==
                              "基板格吕奈森系数" if var == "gammab" else
-                             "基板冲击温度"
+                             "基板冲击温度")
                     )
                     input_params[var] = val
-                    sym_vars[b_var] = symbols(var)
+                    sym_vars[var] = symbols(var)
     
     # 样品参数输入（关联基板时自动同步）
     with st.expander("样品参数", expanded=not (sync_base_sample or sync_flyer_base)):  # 关联时折叠
@@ -1212,7 +1211,7 @@ def manual_mode_page():
                              "样品冲击温度"
                     )
                     input_params[var] = val
-                    sym_vars[s_var] = symbols(var)  # 已修复变量名错误
+                    sym_vars[s_var] = symbols(var)
     
     # 参数组合限制
     range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
@@ -1289,7 +1288,7 @@ def manual_mode_page():
                     current_subs.get(sym_vars['rh0s'], sym_vars['rh0s']) == current_subs.get(sym_vars['rh0b'], sym_vars['rh0b']),
                     current_subs.get(sym_vars['C0b'], sym_vars['C0b']) == current_subs.get(sym_vars['C0s'], sym_vars['C0s']),
                     current_subs.get(sym_vars['Sb'], sym_vars['Sb']) == current_subs.get(sym_vars['Ss'], sym_vars['Ss']),
-                    current_subs.get(sym_vars['E0b'], sym_vars['E0b']) == current_subs.get(sym_vars['E0s'], sym_vars['E0s'])
+                    current_subs.get(sym_vars['E0b'], sym_vars['E0b']) == current_subs.get(sym_vars['E0s'], sym_vars['E0s']) sym_vars['E0s'])
                 ])
             except TypeError:
                 cond = False
