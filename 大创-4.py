@@ -563,68 +563,26 @@ def database_mode_page():
         st.error("数据库中没有可用材料")
         return
     
-    # 添加材料关联复选框
-    st.subheader("材料关联设置")
-    col_sync1, col_sync2 = st.columns(2)
-    with col_sync1:
-        sync_base_sample = st.checkbox("基板与样品材料相同", value=False, 
-                                      help="勾选后，样品材料将自动跟随基板材料，无需重复选择")
-    with col_sync2:
-        sync_flyer_base = st.checkbox("飞片与基板材料相同", value=False,
-                                      help="勾选后，基板和样品材料将自动跟随飞片材料，无需重复选择")
-    
-    # 材料选择逻辑（关联复选框状态）
     col1, col2, col3 = st.columns(3)
     with col1:
         flyer_material = st.selectbox("飞片材料", materials, key="flyer_material")
-    
-    # 若飞片与基板关联，则基板材料禁用且跟随飞片；否则可单独选择
     with col2:
-        if sync_flyer_base:
-            base_material = st.selectbox("基板材料", materials, key="base_material",
-                                        disabled=True, index=materials.index(flyer_material))
-        else:
-            base_material = st.selectbox("基板材料", materials, key="base_material")
-    
-    # 若基板与样品关联，或飞片与基板关联（间接关联样品），则样品材料禁用且跟随基板
+        base_material = st.selectbox("基板材料", materials, key="base_material")
     with col3:
-        if sync_base_sample or sync_flyer_base:
-            sample_material = st.selectbox("样品材料", materials, key="sample_material",
-                                          disabled=True, index=materials.index(base_material))
-        else:
-            sample_material = st.selectbox("样品材料", materials, key="sample_material")
+        sample_material = st.selectbox("样品材料", materials, key="sample_material")
     
-    # 数据加载逻辑（相同材料共享数据）
-    # 按需查询字段，相同材料直接复用数据，避免重复查询
+    # 按需查询字段以减少数据传输
     flyer_df = get_material_data(flyer_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho'])
+    base_df = get_material_data(base_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho'])
+    sample_df = get_material_data(sample_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho'])
     
-    if sync_flyer_base:
-        base_df = flyer_df  # 飞片与基板相同，复用飞片数据
-    else:
-        base_df = get_material_data(base_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho'])
-    
-    if sync_base_sample or sync_flyer_base:
-        sample_df = base_df  # 样品与基板相同，复用基板数据
-    else:
-        sample_df = get_material_data(sample_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho'])
-    
-    # 拟合逻辑（相同材料复用拟合结果）
+    # 为每种材料类型拟合数据并清晰标注
     with st.spinner(f"正在拟合飞片材料{flyer_material}的数据..."):
         flyer_fit = fit_material_data(flyer_df, flyer_material, "飞片")
-    
-    if sync_flyer_base:
-        base_fit = flyer_fit  # 复用飞片拟合结果
-        st.info(f"基板与飞片材料相同（{flyer_material}），已自动同步拟合参数")
-    else:
-        with st.spinner(f"正在拟合基板材料{base_material}的数据..."):
-            base_fit = fit_material_data(base_df, base_material, "基板")
-    
-    if sync_base_sample or sync_flyer_base:
-        sample_fit = base_fit  # 复用基板拟合结果
-        st.info(f"样品与基板材料相同（{base_material}），已自动同步拟合参数")
-    else:
-        with st.spinner(f"正在拟合样品材料{sample_material}的数据..."):
-            sample_fit = fit_material_data(sample_df, sample_material, "样品")
+    with st.spinner(f"正在拟合基板材料{base_material}的数据..."):
+        base_fit = fit_material_data(base_df, base_material, "基板")
+    with st.spinner(f"正在拟合样品材料{sample_material}的数据..."):
+        sample_fit = fit_material_data(sample_df, sample_material, "样品")
     
     # 冲击波参数分析部分，为每种材料单独绘图
     st.subheader("冲击波参数分析（Hugoniot关系）")
@@ -635,12 +593,10 @@ def database_mode_page():
     - 应用说明：在高压下（如>100 GPa）可能出现偏差，需考虑相变或非线性项
     """)
     
-    # 图像显示（相同材料复用图像逻辑）
+    # 为每种材料类型显示单独的图像，数据库模式下设置use_english=True
     display_material_plots(flyer_df, flyer_material, "飞片", use_english=True)
-    if not sync_flyer_base:  # 材料不同时才单独显示基板图像
-        display_material_plots(base_df, base_material, "基板", use_english=True)
-    if not (sync_base_sample or sync_flyer_base):  # 材料不同时才单独显示样品图像
-        display_material_plots(sample_df, sample_material, "样品", use_english=True)
+    display_material_plots(base_df, base_material, "基板", use_english=True)
+    display_material_plots(sample_df, sample_material, "样品", use_english=True)
     
     default_params = {"f": flyer_fit, "b": base_fit, "s": sample_fit}
     # 参数定义
@@ -708,100 +664,84 @@ def database_mode_page():
                 sym_vars[var] = symbols(var)
     
     # 基板参数
-    with st.expander(f"{base_material}基板参数", expanded=not sync_flyer_base):
-        if sync_flyer_base:
-            st.info(f"基板与飞片材料相同（{flyer_material}），已自动同步飞片参数")
-            # 自动同步飞片参数到基板
-            for f_var, b_var in zip(variables["f"], variables["b"]):
-                if f_var in input_params:
-                    input_params[b_var] = input_params[f_var]
-                    sym_vars[b_var] = sym_vars[f_var]
-        else:
-            cols = st.columns(3)
-            for i, var in enumerate(variables["b"]):
-                with cols[i % 3]:
-                    default_val = None
-                    if default_params["b"] and var in ["rh0b", "C0b", "Sb"]:
-                        if var == "rh0b":
-                            default_val = default_params["b"]["rho0"]
-                        elif var == "C0b":
-                            default_val = default_params["b"]["C0"]
-                        elif var == "Sb":
-                            default_val = default_params["b"]["S"]
-                    elif var == "gammab":
-                        default_val = 2.0  # 默认格吕奈森系数
-                    val = get_input_streamlit(
-                        label=var,
-                        var_name=var,
-                        key=f"b_{var}",
-                        default=default_val,
-                        unit="g/cm³" if var.startswith("rh") else 
-                             "km/s" if var in ["Db", "C0b", "ub"] else 
-                             "GPa·cm³/g" if var in ["E0b", "Eb"] else
-                             "GPa" if var == "Pb" else 
-                             "K" if var == "Tb" else "无量纲",
-                        desc=("基板初始密度" if var == "rh0b" else
-                             "基板压缩密度" if var == "rhb" else
-                             "基板冲击波速度" if var == "Db" else
-                             "基板体声速" if var == "C0b" else
-                             "基板Hugoniot参数" if var == "Sb" else
-                             "基板初始内能密度" if var == "E0b" else
-                             "基板压缩内能密度" if var == "Eb" else
-                             "基板粒子速度" if var == "ub" else
-                             "基板冲击压力" if var == "Pb" else
-                             "基板格吕奈森系数" if var == "gammab" else
-                             "基板冲击温度")
-                    )
-                    input_params[var] = val
-                    sym_vars[var] = symbols(var)
+    with st.expander(f"{base_material}基板参数", expanded=True):
+        cols = st.columns(3)
+        for i, var in enumerate(variables["b"]):
+            with cols[i % 3]:
+                default_val = None
+                if default_params["b"] and var in ["rh0b", "C0b", "Sb"]:
+                    if var == "rh0b":
+                        default_val = default_params["b"]["rho0"]
+                    elif var == "C0b":
+                        default_val = default_params["b"]["C0"]
+                    elif var == "Sb":
+                        default_val = default_params["b"]["S"]
+                elif var == "gammab":
+                    default_val = 2.0  # 默认格吕奈森系数
+                val = get_input_streamlit(
+                    label=var,
+                    var_name=var,
+                    key=f"b_{var}",
+                    default=default_val,
+                    unit="g/cm³" if var.startswith("rh") else 
+                         "km/s" if var in ["Db", "C0b", "ub"] else 
+                         "GPa·cm³/g" if var in ["E0b", "Eb"] else
+                         "GPa" if var == "Pb" else 
+                         "K" if var == "Tb" else "无量纲",
+                    desc="初始密度" if var == "rh0b" else
+                         "压缩密度" if var == "rhb" else
+                         "冲击波速度" if var == "Db" else
+                         "体声速" if var == "C0b" else
+                         "Hugoniot参数" if var == "Sb" else
+                         "初始内能密度" if var == "E0b" else
+                         "压缩内能密度" if var == "Eb" else
+                         "粒子速度" if var == "ub" else
+                         "冲击压力" if var == "Pb" else
+                         "格吕奈森系数" if var == "gammab" else
+                         "冲击温度"
+                )
+                input_params[var] = val
+                sym_vars[var] = symbols(var)
     
     # 样品参数
-    with st.expander(f"{sample_material}样品参数", expanded=not (sync_base_sample or sync_flyer_base)):
-        if sync_base_sample or sync_flyer_base:
-            st.info(f"样品与基板材料相同（{base_material}），已自动同步基板参数")
-            # 自动同步基板参数到样品
-            for b_var, s_var in zip(variables["b"], variables["s"]):
-                if b_var in input_params:
-                    input_params[s_var] = input_params[b_var]
-                    sym_vars[s_var] = sym_vars[b_var]
-        else:
-            cols = st.columns(3)
-            for i, var in enumerate(variables["s"]):
-                with cols[i % 3]:
-                    default_val = None
-                    if default_params["s"] and var in ["rh0s", "C0s", "Ss"]:
-                        if var == "rh0s":
-                            default_val = default_params["s"]["rho0"]
-                        elif var == "C0s":
-                            default_val = default_params["s"]["C0"]
-                        elif var == "Ss":
-                            default_val = default_params["s"]["S"]
-                    elif var == "gammas":
-                        default_val = 2.0  # 默认格吕奈森系数
-                    val = get_input_streamlit(
-                        label=var,
-                        var_name=var,
-                        key=f"s_{var}",
-                        default=default_val,
-                        unit="g/cm³" if var.startswith("rh") else 
-                             "km/s" if var in ["Ds", "C0s", "us"] else 
-                             "GPa·cm³/g" if var in ["E0s", "Es"] else
-                             "GPa" if var == "Ps" else 
-                             "K" if var == "Ts" else "无量纲",
-                        desc="样品初始密度" if var == "rh0s" else
-                             "样品压缩密度" if var == "rhs" else
-                             "样品冲击波速度" if var == "Ds" else
-                             "样品体声速" if var == "C0s" else
-                             "样品Hugoniot参数" if var == "Ss" else
-                             "样品初始内能密度" if var == "E0s" else
-                             "样品压缩内能密度" if var == "Es" else
-                             "样品粒子速度" if var == "us" else
-                             "样品冲击压力" if var == "Ps" else
-                             "样品格吕奈森系数" if var == "gammas" else
-                             "样品冲击温度"
-                    )
-                    input_params[var] = val
-                    sym_vars[var] = symbols(var)
+    with st.expander(f"{sample_material}样品参数", expanded=True):
+        cols = st.columns(3)
+        for i, var in enumerate(variables["s"]):
+            with cols[i % 3]:
+                default_val = None
+                if default_params["s"] and var in ["rh0s", "C0s", "Ss"]:
+                    if var == "rh0s":
+                        default_val = default_params["s"]["rho0"]
+                    elif var == "C0s":
+                        default_val = default_params["s"]["C0"]
+                    elif var == "Ss":
+                        default_val = default_params["s"]["S"]
+                elif var == "gammas":
+                    default_val = 2.0  # 默认格吕奈森系数
+                val = get_input_streamlit(
+                    label=var,
+                    var_name=var,
+                    key=f"s_{var}",
+                    default=default_val,
+                    unit="g/cm³" if var.startswith("rh") else 
+                         "km/s" if var in ["Ds", "C0s", "us"] else 
+                         "GPa·cm³/g" if var in ["E0s", "Es"] else
+                         "GPa" if var == "Ps" else 
+                         "K" if var == "Ts" else "无量纲",
+                    desc="初始密度" if var == "rh0s" else
+                         "压缩密度" if var == "rhs" else
+                         "冲击波速度" if var == "Ds" else
+                         "体声速" if var == "C0s" else
+                         "Hugoniot参数" if var == "Ss" else
+                         "初始内能密度" if var == "E0s" else
+                         "压缩内能密度" if var == "Es" else
+                         "粒子速度" if var == "us" else
+                         "冲击压力" if var == "Ps" else
+                         "格吕奈森系数" if var == "gammas" else
+                         "冲击温度"
+                )
+                input_params[var] = val
+                sym_vars[var] = symbols(var)
     
     # 参数组合限制
     range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
@@ -872,7 +812,7 @@ def database_mode_page():
             ]
             
             try:
-                # 检查样品和基板是否为同一材料（即使未勾选同步，实际材料相同时也自动处理）
+                # 检查样品和基板是否为同一材料
                 cond = all([
                     current_subs.get(sym_vars['rh0s'], sym_vars['rh0s']) == current_subs.get(sym_vars['rh0b'], sym_vars['rh0b']),
                     current_subs.get(sym_vars['C0b'], sym_vars['C0b']) == current_subs.get(sym_vars['C0s'], sym_vars['C0s']),
@@ -998,29 +938,14 @@ def manual_mode_page():
     st.title("手动输入模式")
     st.write("通过手动输入参数进行求解，适用于没有数据库数据的场景")
     
-    # 材料关联复选框
-    st.subheader("材料关联设置")
-    col_sync1, col_sync2 = st.columns(2)
-    with col_sync1:
-        sync_base_sample = st.checkbox("基板与样品参数相同", value=False,
-                                      help="勾选后，样品参数将自动跟随基板参数，无需重复输入")
-    with col_sync2:
-        sync_flyer_base = st.checkbox("飞片与基板参数相同", value=False,
-                                      help="勾选后，基板和样品参数将自动跟随飞片参数，无需重复输入")
-    
-    # 基础材料信息（统一设置，避免重复）
+    # 材料参数输入
     col1, col2 = st.columns(2)
     with col1:
-        material_name = st.text_input("材料名称（主材料）", value="铜", help="输入主要材料名称，如：铜、铝等")
-        # 若关联飞片与基板，主材料同时作为所有材料名称
-        if sync_flyer_base:
-            st.info(f"飞片/基板/样品材料均为：{material_name}（已关联）")
-        elif sync_base_sample:
-            st.info(f"基板/样品材料均为：{material_name}（已关联）")
-    
+        material_name = st.text_input("材料名称", value="铜", help="输入材料名称，如：铜、铝等")
+        gamma = st.number_input("格吕奈森系数Γ", value=2.0, min_value=0.1, help="铜约为2.0，铝约为2.13")
     with col2:
-        gamma = st.number_input("格吕奈森系数Γ（统一值）", value=2.0, min_value=0.1, help="铜约为2.0，铝约为2.13")
-        Cv = st.number_input("定容比热容Cv (J/(kg·K))（统一值）", value=385, help="铜约为385，铝约为900")
+        exp_method = st.text_input("实验方法/数据来源", value="手动输入", help="记录数据来源，如：实验设备、文献等")
+        Cv = st.number_input("定容比热容Cv (J/(kg·K))", value=385, help="铜约为385，铝约为900")
     
     # 冲击波参数快速计算
     st.subheader("冲击波参数快速计算")
@@ -1079,7 +1004,7 @@ def manual_mode_page():
     # 保存输入数据到数据库
     if calculation_result:
         if st.button("保存输入数据到数据库"):
-            save_input_data_to_db(calculation_result, material_name, "manual_input")
+            save_input_data_to_db(calculation_result, material_name, exp_method)
     
     # 参数输入
     variables = {
@@ -1089,18 +1014,13 @@ def manual_mode_page():
     }
     
     input_params = {}
-    sym_vars = {}  # 初始化sym_vars字典，修复UnboundLocalError
+    sym_vars = {}
     
-    # 飞片参数输入（基础参数）
     with st.expander("飞片参数", expanded=True):
         cols = st.columns(3)
         for i, var in enumerate(variables["f"]):
             with cols[i % 3]:
-                # 格吕奈森系数统一赋值
-                default_val = gamma if var == "gammaf" else None
-                # 密度默认值（铜的典型值）
-                if var == "rh0f":
-                    default_val = 8.96
+                default_val = 2.0 if var == "gammaf" else None
                 val = get_input_streamlit(
                     label=var,
                     var_name=var,
@@ -1127,91 +1047,67 @@ def manual_mode_page():
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
     
-    # 基板参数输入（关联飞片时自动同步）
-    with st.expander("基板参数", expanded=not sync_flyer_base):  # 关联时折叠
-        if sync_flyer_base:
-            # 飞片与基板关联：直接同步飞片参数，隐藏输入框
-            st.info("基板与飞片参数相同，已自动同步飞片的所有参数")
-            # 自动复制飞片参数到基板参数
-            for f_var, b_var in zip(variables["f"], variables["b"]):
-                if f_var in input_params:
-                    input_params[b_var] = input_params[f_var]
-                    sym_vars[b_var] = sym_vars[f_var]
-        else:
-            # 未关联时正常输入
-            cols = st.columns(3)
-            for i, var in enumerate(variables["b"]):
-                with cols[i % 3]:
-                    default_val = gamma if var == "gammab" else None
-                    if var == "rh0b":
-                        default_val = 8.96  # 基板默认密度（与飞片一致）
-                    val = get_input_streamlit(
-                        label=var,
-                        var_name=var,
-                        key=f"b_{var}",
-                        default=default_val,
-                        unit="g/cm³" if var.startswith("rh") else 
-                             "km/s" if var in ["Db", "C0b", "ub"] else 
-                             "GPa·cm³/g" if var in ["E0b", "Eb"] else
-                             "GPa" if var == "Pb" else 
-                             "K" if var == "Tb" else "无量纲",
-                        desc=("基板初始密度" if var == "rh0b" else
-                             "基板压缩密度" if var == "rhb" else
-                             "基板冲击波速度" if var == "Db" else
-                             "基板体声速" if var == "C0b" else
-                             "基板Hugoniot参数" if var == "Sb" else
-                             "基板初始内能密度" if var == "E0b" else
-                             "基板压缩内能密度" if var == "Eb" else
-                             "基板粒子速度" if var == "ub" else
-                             "基板冲击压力" if var == "Pb" else
-                             "基板格吕奈森系数" if var == "gammab" else
-                             "基板冲击温度")
-                    )
-                    input_params[var] = val
-                    sym_vars[var] = symbols(var)
+    # 基板参数输入
+    with st.expander("基板参数", expanded=True):
+        cols = st.columns(3)
+        for i, var in enumerate(variables["b"]):
+            with cols[i % 3]:
+                default_val = 2.0 if var == "gammab" else None
+                val = get_input_streamlit(
+                    label=var,
+                    var_name=var,
+                    key=f"b_{var}",
+                    default=default_val,
+                    unit="g/cm³" if var.startswith("rh") else 
+                         "km/s" if var in ["Db", "C0b", "ub"] else 
+                         "GPa·cm³/g" if var in ["E0b", "Eb"] else
+                         "GPa" if var == "Pb" else
+                         "K" if var == "Tb" else "无量纲",
+                    desc="基板初始密度" if var == "rh0b" else
+                         "基板压缩密度" if var == "rhb" else
+                         "基板冲击波速度" if var == "Db" else
+                         "基板体声速" if var == "C0b" else
+                         "基板Hugoniot参数" if var == "Sb" else
+                         "基板初始内能密度" if var == "E0b" else
+                         "基板压缩内能密度" if var == "Eb" else
+                         "基板粒子速度" if var == "ub" else
+                         "基板冲击压力" if var == "Pb" else
+                         "基板格吕奈森系数" if var == "gammab" else
+                         "基板冲击温度"
+                )
+                input_params[var] = val
+                sym_vars[var] = symbols(var)
     
-    # 样品参数输入（关联基板时自动同步）
-    with st.expander("样品参数", expanded=not (sync_base_sample or sync_flyer_base)):  # 关联时折叠
-        if sync_base_sample or sync_flyer_base:
-            # 样品与基板关联：直接同步基板参数，隐藏输入框
-            st.info("样品与基板参数相同，已自动同步基板的所有参数")
-            # 自动复制基板参数到样品参数
-            for b_var, s_var in zip(variables["b"], variables["s"]):
-                if b_var in input_params:
-                    input_params[s_var] = input_params[b_var]
-                    sym_vars[s_var] = sym_vars[b_var]
-        else:
-            # 未关联时正常输入
-            cols = st.columns(3)
-            for i, var in enumerate(variables["s"]):
-                with cols[i % 3]:
-                    default_val = gamma if var == "gammas" else None
-                    if var == "rh0s":
-                        default_val = 8.96  # 样品默认密度
-                    val = get_input_streamlit(
-                        label=var,
-                        var_name=var,
-                        key=f"s_{var}",
-                        default=default_val,
-                        unit="g/cm³" if var.startswith("rh") else 
-                             "km/s" if var in ["Ds", "C0s", "us"] else 
-                             "GPa·cm³/g" if var in ["E0s", "Es"] else
-                             "GPa" if var == "Ps" else 
-                             "K" if var == "Ts" else "无量纲",
-                        desc="样品初始密度" if var == "rh0s" else
-                             "样品压缩密度" if var == "rhs" else
-                             "样品冲击波速度" if var == "Ds" else
-                             "样品体声速" if var == "C0s" else
-                             "样品Hugoniot参数S" if var == "Ss" else
-                             "样品初始内能密度" if var == "E0s" else
-                             "样品压缩内能密度" if var == "Es" else
-                             "样品粒子速度" if var == "us" else
-                             "样品冲击压力" if var == "Ps" else
-                             "样品格吕奈森系数" if var == "gammas" else
-                             "样品冲击温度"
-                    )
-                    input_params[var] = val
-                    sym_vars[s_var] = symbols(var)
+    # 样品参数输入
+    with st.expander("样品参数", expanded=True):
+        cols = st.columns(3)
+        for i, var in enumerate(variables["s"]):
+            with cols[i % 3]:
+                default_val = 2.0 if var == "gammas" else None
+                val = get_input_streamlit(
+                    label=var,
+                    var_name=var,
+                    key=f"s_{var}",
+                    default=default_val,
+                    unit="g/cm³" if var.startswith("rh") else 
+                         "km/s" if var in ["Ds", "C0s", "us"] else 
+                         "GPa·cm³/g" if var in ["E0s", "Es"] else
+                         "GPa" if var == "Ps" else
+                         "K" if var == "Ts" else "无量纲",
+                    desc="样品初始密度" if var == "rh0s" else
+                         "样品压缩密度" if var == "rhs" else
+                         "样品冲击波速度" if var == "Ds" else
+                         "样品体声速" if var == "C0s" else
+                         "样品Hugoniot参数S" if var == "Ss" else
+                         "样品初始内能密度" if var == "E0s" else
+                         "样品压缩内能密度" if var == "Es" else
+                         "样品粒子速度" if var == "us" else
+                         "样品冲击压力" if var == "Ps" else
+                         "样品格吕奈森系数" if var == "gammas" else
+                         "样品冲击温度"
+                )
+                input_params[var] = val
+                sym_vars[var] = symbols(var)
     
     # 参数组合限制
     range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
@@ -1416,4 +1312,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
