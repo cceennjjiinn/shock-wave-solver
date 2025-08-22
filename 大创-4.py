@@ -92,13 +92,19 @@ def get_material_data(material_name, fields=None):
         return pd.DataFrame()
 
 def save_results_to_db(results, material_name="Copper"):
+    """保存多组求解结果到数据库，返回保存的记录数"""
     if not results:
-        st.warning("没有数据可保存")
-        return
+        return 0
         
     try:
+        count = 0
         with sqlite_engine.begin() as conn:
             for result in results:
+                # 检查必要的参数是否存在
+                required_params = ['rh0f', 'Df', 'uf', 'Pf']
+                if not all(param in result for param in required_params):
+                    continue
+                    
                 data = {
                     'material': material_name,
                     'rho0': result.get('rh0f', 0),
@@ -109,8 +115,8 @@ def save_results_to_db(results, material_name="Copper"):
                     'rho': result.get('rhf', 0),
                     'V_V0': result.get('V_V0', 0),
                     'exp_method': 'calculated',
-                    'gamma': result.get('gamma', 0),
-                    'T': result.get('T', 0)
+                    'gamma': result.get('gammaf', 0),
+                    'T': result.get('Tf', 0)
                 }
                 stmt = text("""
                     INSERT INTO shock_wave_all_data 
@@ -118,11 +124,44 @@ def save_results_to_db(results, material_name="Copper"):
                     VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
                 """)
                 conn.execute(stmt, data)
-        st.success(f"成功将{len(results)}个计算结果保存到数据库")
+                count += 1
+        return count
     except Exception as e:
         st.error(f"保存失败: {str(e)}")
+        return 0
+
+def save_input_parameters(input_params, material_name, exp_method="manual_input"):
+    """保存当前输入的参数到数据库"""
+    try:
+        # 提取关键参数
+        data = {
+            'material': material_name,
+            'rho0': input_params.get('rh0f') if isinstance(input_params.get('rh0f'), (int, float)) else 0,
+            'Us': input_params.get('Df') if isinstance(input_params.get('Df'), (int, float)) else 0,
+            'Up': input_params.get('uf') if isinstance(input_params.get('uf'), (int, float)) else 0,
+            'P': input_params.get('Pf') if isinstance(input_params.get('Pf'), (int, float)) else 0,
+            'V': 0,  # 无法直接从输入参数获取
+            'rho': input_params.get('rhf') if isinstance(input_params.get('rhf'), (int, float)) else 0,
+            'V_V0': 0,  # 无法直接从输入参数获取
+            'exp_method': exp_method,
+            'gamma': input_params.get('gammaf') if isinstance(input_params.get('gammaf'), (int, float)) else 0,
+            'T': input_params.get('Tf') if isinstance(input_params.get('Tf'), (int, float)) else 0
+        }
+        
+        with sqlite_engine.begin() as conn:
+            stmt = text("""
+                INSERT INTO shock_wave_all_data 
+                (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T) 
+                VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
+            """)
+            conn.execute(stmt, data)
+        return 1
+    except Exception as e:
+        st.error(f"保存输入参数失败: {str(e)}")
+        return 0
 
 def save_input_data_to_db(input_data, material_name, exp_method="manual_input"):
+    """保存计算结果到数据库，返回保存的记录数"""
     try:
         with sqlite_engine.begin() as conn:
             data = {
@@ -144,9 +183,36 @@ def save_input_data_to_db(input_data, material_name, exp_method="manual_input"):
                 VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
             """)
             conn.execute(stmt, data)
-        st.success(f"成功将输入数据保存到数据库（材料: {material_name}）")
+        return 1
     except Exception as e:
         st.error(f"保存输入数据失败: {str(e)}")
+        return 0
+
+def view_database():
+    """显示数据库内容"""
+    with st.expander("数据库内容", expanded=True):
+        materials = get_all_materials()
+        if not materials:
+            st.info("数据库中暂无数据")
+            return
+            
+        selected_material = st.selectbox("选择材料查看数据", materials)
+        df = get_material_data(selected_material)
+        
+        if df.empty:
+            st.info(f"材料 {selected_material} 暂无数据")
+        else:
+            st.info(f"材料 {selected_material} 共有 {len(df)} 条记录")
+            st.dataframe(df)
+            
+            # 提供下载选项
+            csv = df.to_csv(index=False)
+            st.download_button(
+                label=f"下载 {selected_material} 数据",
+                data=csv,
+                file_name=f"{selected_material}_data.csv",
+                mime="text/csv",
+            )
 
 # 冲击波参数计算（包含温度计算）
 def calculate_shock_parameters(U_s, u_p, rho0, gamma=2.0, Cv=385, T0=300):
@@ -543,6 +609,12 @@ def home_page():
     2. 假设条件：平面冲击波、稳态传播、忽略初始压力
     3. 单位系统：密度(g/cm³)、速度(km/s)、压力(GPa)
     """)
+    
+    # 查看数据库快捷入口
+    if st.button("查看数据库"):
+        st.session_state.page = "view_database"
+        st.rerun()
+    
     st.write("选择操作模式：")
     
     col1, col2 = st.columns(2)
@@ -558,6 +630,11 @@ def home_page():
 def database_mode_page():
     st.title("数据库模式")
     st.write("从数据库加载材料数据，基于Hugoniot关系拟合参数并求解")
+    
+    # 查看数据库快捷入口
+    if st.button("查看数据库"):
+        st.session_state.page = "view_database"
+        st.rerun()
     
     materials = get_all_materials()
     if not materials:
@@ -849,6 +926,14 @@ def database_mode_page():
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
     
+    # 固定显示保存当前参数按钮
+    col_save, col_other = st.columns([1, 3])
+    with col_save:
+        if st.button("保存当前参数到数据库"):
+            count = save_input_parameters(input_params, sample_material, "database_mode_input")
+            if count > 0:
+                st.success(f"已保存到材料 {sample_material} 的数据集，共 {count} 条记录")
+    
     # 参数组合限制
     range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
     total_combinations = 1
@@ -1032,9 +1117,9 @@ def database_mode_page():
                 )
             
             if st.button("保存结果到数据库"):
-                save_results_to_db(results, sample_material)
-        else:
-            st.warning("未找到有效解（请检查参数是否符合物理范围，如冲击波速度>粒子速度）")
+                count = save_results_to_db(results, sample_material)
+                if count > 0:
+                    st.success(f"已保存到材料 {sample_material} 的数据集，共 {count} 条记录")
     
     if st.button("返回首页"):
         st.session_state.page = "home"
@@ -1043,6 +1128,11 @@ def database_mode_page():
 def manual_mode_page():
     st.title("手动输入模式")
     st.write("通过手动输入参数进行求解，适用于没有数据库数据的场景")
+    
+    # 查看数据库快捷入口
+    if st.button("查看数据库"):
+        st.session_state.page = "view_database"
+        st.rerun()
     
     # 材料参数输入
     col1, col2, col3 = st.columns(3)
@@ -1197,8 +1287,10 @@ def manual_mode_page():
     
     # 保存输入数据到数据库
     if calculation_result:
-        if st.button("保存输入数据到数据库"):
-            save_input_data_to_db(calculation_result, calc_material, exp_method)
+        if st.button("保存快速计算结果到数据库"):
+            count = save_input_data_to_db(calculation_result, calc_material, exp_method)
+            if count > 0:
+                st.success(f"已保存到材料 {calc_material} 的数据集，共 {count} 条记录")
     
     # 参数输入
     variables = {
@@ -1350,6 +1442,14 @@ def manual_mode_page():
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
+    
+    # 固定显示保存当前参数按钮
+    col_save, col_other = st.columns([1, 3])
+    with col_save:
+        if st.button("保存当前参数到数据库"):
+            count = save_input_parameters(input_params, sample_material, "manual_mode_input")
+            if count > 0:
+                st.success(f"已保存到材料 {sample_material} 的数据集，共 {count} 条记录")
     
     # 参数组合限制
     range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
@@ -1527,7 +1627,9 @@ def manual_mode_page():
                 )
             
             if st.button("保存计算结果到数据库"):
-                save_results_to_db(results, sample_material)
+                count = save_results_to_db(results, sample_material)
+                if count > 0:
+                    st.success(f"已保存到材料 {sample_material} 的数据集，共 {count} 条记录")
         else:
             st.warning("未找到有效解（请检查参数是否符合物理规律，如冲击波速度>粒子速度）")
     
@@ -1544,6 +1646,15 @@ def main():
         page_icon="✨",
         layout="wide"
     )
+    
+    # 数据库查看页面
+    if st.session_state.page == "view_database":
+        st.title("数据库查看")
+        view_database()
+        if st.button("返回首页"):
+            st.session_state.page = "home"
+            st.rerun()
+        return
     
     if st.session_state.page == "home":
         home_page()
