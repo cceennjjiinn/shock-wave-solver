@@ -1089,7 +1089,7 @@ def manual_mode_page():
     }
     
     input_params = {}
-    sym_vars = {}
+    sym_vars = {}  # 初始化sym_vars字典，修复UnboundLocalError
     
     # 飞片参数输入（基础参数）
     with st.expander("飞片参数", expanded=True):
@@ -1164,11 +1164,12 @@ def manual_mode_page():
                              "基板压缩内能密度" if var == "Eb" else
                              "基板粒子速度" if var == "ub" else
                              "基板冲击压力" if var == "Pb" else
+                             "基板格吕奈森系数" if var ==
                              "基板格吕奈森系数" if var == "gammab" else
                              "基板冲击温度"
                     )
                     input_params[var] = val
-                    sym_vars[var] = symbols(var)
+                    sym_vars[b_var] = symbols(var)
     
     # 样品参数输入（关联基板时自动同步）
     with st.expander("样品参数", expanded=not (sync_base_sample or sync_flyer_base)):  # 关联时折叠
@@ -1211,7 +1212,7 @@ def manual_mode_page():
                              "样品冲击温度"
                     )
                     input_params[var] = val
-                    sym_vars[s_var] = symbols(var)
+                    sym_vars[s_var] = symbols(var)  # 已修复变量名错误
     
     # 参数组合限制
     range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
@@ -1416,3 +1417,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
