@@ -519,7 +519,8 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", di
         ["单一值", "多个值（逗号分隔）", "范围（可指定步长）"],
         key=f"{key}_type",
         horizontal=True,
-        disabled=disabled
+        disabled=disabled,
+        help="选择输入数据的方式：单一数值、多个离散值或连续范围值"
     )
     
     default_val = str(default) if default is not None else ""
@@ -531,25 +532,55 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", di
         try:
             return [float(val)]
         except ValueError:
-            st.error("请输入有效的数字")
+            st.error("请输入有效的数字（例如：3.14）")
             return None
     elif input_type == "多个值（逗号分隔）":
-        val = st.text_input(label, default_val, key=f"{key}_multi", disabled=disabled)
+        val = st.text_input(
+            label, 
+            default_val, 
+            key=f"{key}_multi", 
+            disabled=disabled,
+            help="输入多个数值，用逗号分隔（示例：1.5, 3.0, 4.5）"
+        )
         if val == "":
             return symbols(var_name)
         try:
-            return [float(x.strip()) for x in val.split(',')]
+            # 处理可能的空格并分割
+            values = [float(x.strip()) for x in val.split(',') if x.strip()]
+            if not values:
+                st.error("请至少输入一个数值")
+                return None
+            return values
         except ValueError:
-            st.error("请输入有效的逗号分隔数字")
+            st.error("请输入有效的逗号分隔数字（例如：1.0, 2.5, 3.8）")
             return None
     else:
+        st.caption("范围示例：起始值=1.0，结束值=5.0，步长=1.0 → 生成 [1.0, 2.0, 3.0, 4.0, 5.0]")
         col1, col2, col3 = st.columns(3)
         with col1:
-            start = st.text_input(f"{label}起始值", default_val, key=f"{key}_start", disabled=disabled)
+            start = st.text_input(
+                f"{label}起始值", 
+                default_val, 
+                key=f"{key}_start", 
+                disabled=disabled,
+                help="范围的第一个数值（例如：2.0）"
+            )
         with col2:
-            end = st.text_input(f"{label}结束值", "", key=f"{key}_end", disabled=disabled)
+            end = st.text_input(
+                f"{label}结束值", 
+                "", 
+                key=f"{key}_end", 
+                disabled=disabled,
+                help="范围的最后一个数值（需大于起始值，例如：10.0）"
+            )
         with col3:
-            step = st.text_input(f"{label}步长（可选）", "0.5", key=f"{key}_step", disabled=disabled)
+            step = st.text_input(
+                f"{label}步长（可选）", 
+                "0.5", 
+                key=f"{key}_step", 
+                disabled=disabled,
+                help="每次递增的数值（例如：0.5 或 2.0，默认0.5）"
+            )
             
         if not start or not end:
             return symbols(var_name)
@@ -558,16 +589,30 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", di
             start = float(start)
             end = float(end)
             step = float(step) if step else 0.5
+            
+            # 验证和修正输入
+            if step <= 0:
+                step = 0.5
+                st.warning("步长必须为正数，已自动设置为0.5")
+            if start > end:
+                start, end = end, start
+                st.warning("起始值大于结束值，已自动交换为从小到大的范围")
+            if (end - start) < step:
+                st.warning("步长大于范围差值，将只返回起始值")
+                return [start]
+                
+            # 生成范围值
             values = []
             current = start
-            epsilon = 1e-9
+            epsilon = 1e-9  # 处理浮点数精度问题
             while current <= end + epsilon:
                 values.append(round(current, 6))
                 current += step
             return values
         except ValueError:
-            st.error("请输入有效的范围数字")
+            st.error("请输入有效的范围数字（例如：起始值1.0，结束值5.0，步长1.0）")
             return None
+    
 
 # 数值求解器（替代符号求解以提高速度）
 def solve_numerically(eqs, sym_vars, initial_guess):
