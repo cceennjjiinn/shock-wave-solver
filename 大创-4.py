@@ -8,7 +8,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error
 from sympy import symbols, Eq, solve
 from scipy.optimize import least_squares
-from io import BytesIO
+from io import BytesIO, StringIO
 from PIL import Image
 import itertools
 import os
@@ -65,6 +65,7 @@ def init_database():
 init_database()
 
 # 数据库操作函数 - 优化查询效率
+@st.cache_data(ttl=3600)  # 缓存1小时
 def get_all_materials():
     try:
         query = text("SELECT DISTINCT material FROM shock_wave_all_data")
@@ -190,240 +191,203 @@ def save_input_data_to_db(input_data, material_name, exp_method="manual_input"):
         st.error(f"保存输入数据失败: {str(e)}")
         return 0
 
-# 批量操作函数
-def batch_import_data(df, material_name):
-    """批量导入数据到数据库"""
+# 新增：批量导入数据到数据库
+def bulk_import_data(df, material_name, exp_method="bulk_import"):
+    """批量导入数据到数据库，返回成功导入的记录数"""
     if df.empty:
-        return 0, "导入的数据为空"
+        return 0
         
-    # 检查必要字段
-    required_columns = ['rho0', 'Us', 'Up']
-    for col in required_columns:
-        if col not in df.columns:
-            return 0, f"缺少必要字段: {col}"
+    required_columns = ['rho0', 'Us', 'Up']  # 至少需要这三个参数
+    missing_cols = [col for col in required_columns if col not in df.columns]
     
+    if missing_cols:
+        st.error(f"导入失败：CSV文件缺少必要的列: {', '.join(missing_cols)}")
+        return 0
+        
     try:
-        # 创建一个新的DataFrame用于处理
-        import_df = df.copy()
-        
-        # 统一设置材料名称（如果提供）
-        if material_name:
-            import_df['material'] = material_name
-        elif 'material' not in import_df.columns:
-            return 0, "未提供材料名称且文件中不包含material字段"
-        
-        # 补充缺失的可选字段
-        optional_columns = ['P', 'V', 'rho', 'V_V0', 'exp_method', 'gamma', 'T']
-        for col in optional_columns:
-            if col not in import_df.columns:
-                import_df[col] = None
-                
-        # 过滤无效数据（物理合理性检查）
-        valid_mask = (
-            (import_df['Us'] > import_df['Up']) & 
-            (import_df['Us'] > 0) & 
-            (import_df['Up'] >= 0) & 
-            (import_df['rho0'] > 0)
-        )
-        import_df = import_df[valid_mask]
-        
-        if len(import_df) == 0:
-            return 0, "所有数据均不符合物理合理性要求（Us必须大于Up且均为正数）"
-        
+        count = 0
         with sqlite_engine.begin() as conn:
-            # 批量插入
-            import_df.to_sql(
-                'shock_wave_all_data',
-                conn,
-                if_exists='append',
-                index=False,
-                chunksize=1000
-            )
-        return len(import_df), f"数据导入成功，共导入 {len(import_df)} 条有效记录"
+            for _, row in df.iterrows():
+                # 跳过包含空值的行
+                if row[required_columns].isnull().any():
+                    continue
+                    
+                data = {
+                    'material': material_name,
+                    'rho0': row.get('rho0', 0),
+                    'Us': row.get('Us', 0),
+                    'Up': row.get('Up', 0),
+                    'P': row.get('P', 0),
+                    'V': row.get('V', 0),
+                    'rho': row.get('rho', 0),
+                    'V_V0': row.get('V_V0', 0),
+                    'exp_method': exp_method,
+                    'gamma': row.get('gamma', 0),
+                    'T': row.get('T', 0)
+                }
+                stmt = text("""
+                    INSERT INTO shock_wave_all_data 
+                    (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T) 
+                    VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
+                """)
+                conn.execute(stmt, data)
+                count += 1
+        return count
     except Exception as e:
-        return 0, f"导入失败: {str(e)}"
+        st.error(f"批量导入失败: {str(e)}")
+        return 0
 
-def batch_delete_data(material_name=None, exp_method=None, ids=None):
-    """批量删除数据"""
-    if not material_name and not exp_method and not ids:
-        return 0, "未提供删除条件"
+# 新增：批量删除选中的记录
+def bulk_delete_records(ids):
+    """删除指定ID的记录，返回删除的记录数"""
+    if not ids or not isinstance(ids, list):
+        return 0
         
     try:
         with sqlite_engine.begin() as conn:
-            conditions = []
-            params = {}
-            
-            if ids:
-                conditions.append("id IN :ids")
-                params['ids'] = tuple(ids)
-            if material_name:
-                conditions.append("material = :material")
-                params['material'] = material_name
-            if exp_method:
-                conditions.append("exp_method = :method")
-                params['method'] = exp_method
-                
-            if not conditions:
-                return 0, "未提供有效删除条件"
-                
-            query = f"DELETE FROM shock_wave_all_data WHERE {' AND '.join(conditions)}"
-            result = conn.execute(text(query), params)
-            return result.rowcount, f"数据删除成功，共删除 {result.rowcount} 条记录"
+            placeholders = ', '.join([':id' + str(i) for i in range(len(ids))])
+            params = {'id' + str(i): id for i, id in enumerate(ids)}
+            stmt = text(f"DELETE FROM shock_wave_all_data WHERE id IN ({placeholders})")
+            result = conn.execute(stmt, params)
+            return result.rowcount
     except Exception as e:
-        return 0, f"删除失败: {str(e)}"
+        st.error(f"删除失败: {str(e)}")
+        return 0
 
-# 修复数据库查看函数，解决选择框和删除问题
+# 新增：清空指定材料的所有数据
+def clear_material_data(material_name):
+    """清空指定材料的所有数据，返回删除的记录数"""
+    if not material_name:
+        return 0
+        
+    try:
+        with sqlite_engine.begin() as conn:
+            stmt = text("DELETE FROM shock_wave_all_data WHERE material = :material")
+            result = conn.execute(stmt, {'material': material_name})
+            return result.rowcount
+    except Exception as e:
+        st.error(f"清空数据失败: {str(e)}")
+        return 0
+
 def view_database():
-    """显示数据库内容并提供批量操作功能"""
-    st.title("数据库管理")
-    
-    # 批量操作区域
-    with st.expander("批量数据操作", expanded=True):
+    """显示数据库内容，新增批量添加和删除功能"""
+    with st.expander("数据库内容", expanded=True):
+        # 批量操作区域
+        st.subheader("批量数据操作")
         col1, col2 = st.columns(2)
         
-        # 批量导入功能
+        # 批量导入部分
         with col1:
             st.subheader("批量导入数据")
-            st.caption("导入CSV文件，需包含rho0, Us, Up等必要字段")
-            upload_file = st.file_uploader("上传CSV数据文件", type=["csv"])
-            material_for_import = st.text_input("统一材料名称（可选，为空则使用文件中material字段）")
+            new_material = st.text_input("材料名称", help="输入要导入数据的材料名称")
+            uploaded_file = st.file_uploader("选择CSV文件", type="csv")
+            exp_method = st.text_input("实验方法/数据来源", value="bulk_import")
             
-            if upload_file is not None:
-                try:
-                    df = pd.read_csv(upload_file)
-                    st.success(f"文件加载成功，共 {len(df)} 条记录")
-                    
-                    with st.expander("预览数据（前10行）", expanded=False):
-                        st.dataframe(df.head(10))
+            if st.button("导入数据"):
+                if not new_material:
+                    st.error("请输入材料名称")
+                elif uploaded_file is None:
+                    st.error("请选择CSV文件")
+                else:
+                    # 读取CSV文件
+                    try:
+                        df = pd.read_csv(uploaded_file)
+                        st.success(f"成功读取CSV文件，包含 {len(df)} 条记录")
+                        st.dataframe(df.head())  # 显示前几行预览
                         
-                    # 显示数据检查结果
-                    missing_fields = [f for f in ['rho0', 'Us', 'Up'] if f not in df.columns]
-                    if missing_fields:
-                        st.warning(f"数据检查警告：缺少必要字段 {missing_fields}")
-                    else:
-                        invalid_count = len(df[(df['Us'] <= df['Up']) | (df['Us'] <= 0) | (df['Up'] < 0) | (df['rho0'] <= 0)])
-                        if invalid_count > 0:
-                            st.warning(f"数据检查警告：发现 {invalid_count} 条不符合物理合理性的数据（Us必须大于Up且均为正数）")
-                        
-                    if st.button("确认导入"):
-                        count, msg = batch_import_data(df, material_for_import)
+                        # 导入数据
+                        count = bulk_import_data(df, new_material, exp_method)
                         if count > 0:
-                            st.success(msg)
-                            # 导入成功后刷新数据
+                            st.success(f"成功导入 {count} 条记录（跳过包含空值的行）")
+                            # 刷新数据
                             st.experimental_rerun()
                         else:
-                            st.error(msg)
-                except Exception as e:
-                    st.error(f"文件处理失败: {str(e)}")
+                            st.warning("没有导入任何记录，请检查数据格式")
+                    except Exception as e:
+                        st.error(f"读取CSV文件失败: {str(e)}")
         
-        # 批量删除功能
+        # 批量删除部分
         with col2:
             st.subheader("批量删除数据")
-            st.caption("请谨慎操作，删除后的数据无法恢复")
-            delete_mode = st.radio("删除方式", ["按材料删除", "按实验方法删除", "按ID删除"], horizontal=True)
-            
-            if delete_mode == "按材料删除":
-                materials = get_all_materials()
-                if materials:
-                    del_material = st.selectbox("选择要删除的材料", materials)
-                    confirm_del = st.button("确认删除该材料所有数据")
-                    
-                    if confirm_del:
-                        # 二次确认
-                        if st.checkbox("我确认要删除该材料的所有数据，此操作不可恢复"):
-                            count, msg = batch_delete_data(material_name=del_material)
-                            st.info(msg)
-                            # 删除成功后刷新数据
-                            st.experimental_rerun()
-            
-            elif delete_mode == "按实验方法删除":
-                try:
-                    with sqlite_engine.connect() as conn:
-                        methods = conn.execute(text("SELECT DISTINCT exp_method FROM shock_wave_all_data WHERE exp_method IS NOT NULL")).fetchall()
-                        methods = [m[0] for m in methods if m[0]]
-                        
-                        if methods:
-                            del_method = st.selectbox("选择要删除的实验方法", methods)
-                            confirm_del = st.button("确认删除该方法所有数据")
-                            
-                            if confirm_del:
-                                if st.checkbox("我确认要删除该实验方法的所有数据，此操作不可恢复"):
-                                    count, msg = batch_delete_data(exp_method=del_method)
-                                    st.info(msg)
-                                    # 删除成功后刷新数据
-                                    st.experimental_rerun()
-                        else:
-                            st.info("数据库中没有可用的实验方法记录")
-                except Exception as e:
-                    st.error(f"获取实验方法失败: {str(e)}")
-            
-            elif delete_mode == "按ID删除":
-                id_list = st.text_input("输入要删除的ID（逗号分隔）")
-                confirm_del = st.button("确认删除指定ID数据")
+            materials = get_all_materials()
+            if materials:
+                del_material = st.selectbox("选择要操作的材料", materials, key="del_material")
                 
-                if confirm_del:
-                    try:
-                        ids = [int(id.strip()) for id in id_list.split(',') if id.strip()]
-                        if ids:
-                            if st.checkbox(f"我确认要删除ID为{ids}的数据，此操作不可恢复"):
-                                count, msg = batch_delete_data(ids=ids)
-                                st.info(msg)
-                                # 删除成功后刷新数据
+                # 显示该材料的数据供选择删除
+                df = get_material_data(del_material)
+                if not df.empty and 'id' in df.columns:
+                    # 添加复选框选择要删除的记录
+                    df['选择'] = False
+                    edited_df = st.data_editor(
+                        df,
+                        column_config={
+                            "选择": st.column_config.CheckboxColumn(
+                                "选择删除",
+                                default=False,
+                            )
+                        },
+                        disabled=df.columns.difference(["选择"]),
+                        hide_index=True,
+                    )
+                    
+                    # 获取选中的记录ID
+                    selected_ids = edited_df[edited_df['选择']]['id'].tolist()
+                    
+                    col_del1, col_del2 = st.columns(2)
+                    with col_del1:
+                        if st.button("删除所选记录"):
+                            if selected_ids:
+                                if st.session_state.get('confirm_delete', False):
+                                    deleted = bulk_delete_records(selected_ids)
+                                    if deleted > 0:
+                                        st.success(f"成功删除 {deleted} 条记录")
+                                        st.session_state['confirm_delete'] = False
+                                        st.experimental_rerun()
+                                    else:
+                                        st.warning("删除失败或没有记录被删除")
+                                else:
+                                    st.warning("请确认删除操作")
+                                    st.session_state['confirm_delete'] = True
+                                    st.experimental_rerun()
+                            else:
+                                st.warning("请先选择要删除的记录")
+                    
+                    with col_del2:
+                        if st.button("清空该材料所有数据"):
+                            if st.session_state.get('confirm_clear', False):
+                                deleted = clear_material_data(del_material)
+                                if deleted > 0:
+                                    st.success(f"成功清空 {del_material} 的所有 {deleted} 条记录")
+                                    st.session_state['confirm_clear'] = False
+                                    st.experimental_rerun()
+                                else:
+                                    st.warning("清空失败或该材料没有数据")
+                            else:
+                                st.warning("此操作将删除该材料所有数据，请确认")
+                                st.session_state['confirm_clear'] = True
                                 st.experimental_rerun()
-                        else:
-                            st.warning("请输入有效的ID列表")
-                    except ValueError:
-                        st.error("请输入有效的ID数字，用逗号分隔")
-    
-    # 数据查看与单行操作区域 - 修复选择框和删除功能
-    with st.expander("数据库内容查看", expanded=True):
+                else:
+                    st.info(f"材料 {del_material} 暂无数据可删除")
+            else:
+                st.info("数据库中暂无材料数据")
+        
+        # 数据查看部分
+        st.subheader("数据查看与导出")
         materials = get_all_materials()
         if not materials:
             st.info("数据库中暂无数据")
             return
             
-        selected_material = st.selectbox("选择材料查看数据", materials)
-        # 每次选择材料时都重新查询，避免缓存问题
+        selected_material = st.selectbox("选择材料查看数据", materials, key="view_material")
         df = get_material_data(selected_material)
         
         if df.empty:
             st.info(f"材料 {selected_material} 暂无数据")
         else:
             st.info(f"材料 {selected_material} 共有 {len(df)} 条记录")
+            st.dataframe(df)
             
-            # 修复数据编辑器配置：启用选择模式，禁用添加新行
-            edited_df = st.data_editor(
-                df,
-                column_config={
-                    "id": st.column_config.NumberColumn("ID", disabled=True),
-                    "material": st.column_config.TextColumn("材料", disabled=True),
-                    "rho0": st.column_config.NumberColumn("初始密度 (g/cm³)", disabled=True),
-                    "Us": st.column_config.NumberColumn("冲击波速度 (km/s)", disabled=True),
-                    "Up": st.column_config.NumberColumn("粒子速度 (km/s)", disabled=True),
-                    "P": st.column_config.NumberColumn("冲击压力 (GPa)", disabled=True),
-                    "exp_method": st.column_config.TextColumn("实验方法", disabled=True)
-                },
-                disabled=True,  # 保持数据只读
-                hide_index=True,
-                selection_mode="multi-row",  # 启用多行选择功能
-                num_rows="fixed",  # 禁用添加新行，解决加号报错问题
-                use_container_width=True
-            )
-            
-            # 正确获取选中行的ID
-            selected_ids = [row['id'] for row in edited_df['selected_rows']]
-            
-            # 单行删除功能
-            if selected_ids:
-                st.write(f"已选中 {len(selected_ids)} 条记录")
-                if st.button("删除选中记录"):
-                    if st.checkbox("我确认要删除选中的记录，此操作不可恢复"):
-                        count, msg = batch_delete_data(ids=selected_ids)
-                        st.info(msg)
-                        # 删除后刷新数据
-                        st.experimental_rerun()
-            
-            # 下载选项
+            # 提供下载选项
             csv = df.to_csv(index=False)
             st.download_button(
                 label=f"下载 {selected_material} 数据",
@@ -431,6 +395,22 @@ def view_database():
                 file_name=f"{selected_material}_data.csv",
                 mime="text/csv",
             )
+            
+            # 提供CSV模板下载，方便用户按格式准备数据
+            if st.button("下载数据导入模板"):
+                template = pd.DataFrame(columns=[
+                    'rho0', 'Us', 'Up', 'P', 'V', 'rho', 
+                    'V_V0', 'gamma', 'T'
+                ])
+                template.loc[0] = [8.96, 5.0, 1.0, 44.8, 0.089, 11.2, 0.8, 2.0, 3000]
+                csv = template.to_csv(index=False)
+                st.download_button(
+                    label="下载CSV模板",
+                    data=csv,
+                    file_name="shock_wave_data_template.csv",
+                    mime="text/csv",
+                    on_click=lambda: st.success("模板已准备好下载")
+                )
 
 # 冲击波参数计算（包含温度计算）
 def calculate_shock_parameters(U_s, u_p, rho0, gamma=2.0, Cv=385, T0=300):
@@ -469,6 +449,7 @@ def fit_hugoniot(df):
     C0 = coeffs[1]   # 截距（零压声速）
     return C0, S
 
+@st.cache_data(ttl=3600)  # 缓存拟合结果
 def fit_material_data(df, material_name, material_type):
     if df is None or df.empty:
         st.warning(f"{material_type}材料'{material_name}'没有数据")
@@ -631,6 +612,7 @@ def solve_numerically(eqs, sym_vars, initial_guess):
     return None
 
 # 冲击波关系图绘制 - 根据实验方法区分颜色
+@st.cache_data(ttl=3600)  # 缓存图像结果
 def generate_shock_plots(df, C0, S, material_name, material_type, use_english=False):
     # 数据量大时进行采样
     if len(df) > 1000:
@@ -643,7 +625,8 @@ def generate_shock_plots(df, C0, S, material_name, material_type, use_english=Fa
         'iml': 'red',
         'ssp': 'blue',
         'calculated': 'green',
-        'manual_input': 'purple'
+        'manual_input': 'purple',
+        'bulk_import': 'orange'  # 新增：批量导入数据的颜色标识
     }
     default_color = 'gray'  # 未定义的实验方法用灰色
     
@@ -805,6 +788,7 @@ def display_material_plots(df, material_name, material_type, use_english=False):
         st.info(f"没有可用数据生成{material_type}材料{material_name}的图像")
 
 # 结果绘图函数
+@st.cache_data(ttl=3600)  # 缓存图像结果
 def plot_results_streamlit(results):
     if not results:
         return None
@@ -881,7 +865,7 @@ def home_page():
     # 查看数据库快捷入口
     if st.button("查看数据库"):
         st.session_state.page = "view_database"
-        st.experimental_rerun()
+        st.rerun()
     
     st.write("选择操作模式：")
     
@@ -889,11 +873,11 @@ def home_page():
     with col1:
         if st.button("使用数据库数据"):
             st.session_state.page = "database_mode"
-            st.experimental_rerun()  # 立即刷新页面
+            st.rerun()  # 立即刷新页面
     with col2:
         if st.button("手动输入参数"):
             st.session_state.page = "manual_mode"
-            st.experimental_rerun()  # 立即刷新页面
+            st.rerun()  # 立即刷新页面
 
 def database_mode_page():
     st.title("数据库模式")
@@ -902,7 +886,7 @@ def database_mode_page():
     # 查看数据库快捷入口
     if st.button("查看数据库"):
         st.session_state.page = "view_database"
-        st.experimental_rerun()
+        st.rerun()
     
     materials = get_all_materials()
     if not materials:
@@ -987,7 +971,7 @@ def database_mode_page():
     - C0：材料的体声速（零压状态下的声速，单位km/s）
     - S：Hugoniot参数（描述冲击波速度随粒子速度的变化率，无量纲）
     - 应用说明：在高压下（如>100 GPa）可能出现偏差，需考虑相变或非线性项
-    - 数据点颜色区分：iml(红色)、ssp(蓝色)、计算值(绿色)、手动输入(紫色)
+    - 数据点颜色区分：iml(红色)、ssp(蓝色)、计算值(绿色)、手动输入(紫色)、批量导入(橙色)
     """)
     
     # 为每种材料类型显示单独的图像，数据库模式下设置use_english=True
@@ -1392,7 +1376,7 @@ def database_mode_page():
     
     if st.button("返回首页"):
         st.session_state.page = "home"
-        st.experimental_rerun()  # 立即刷新页面
+        st.rerun()  # 立即刷新页面
 
 def manual_mode_page():
     st.title("手动输入模式")
@@ -1401,7 +1385,7 @@ def manual_mode_page():
     # 查看数据库快捷入口
     if st.button("查看数据库"):
         st.session_state.page = "view_database"
-        st.experimental_rerun()
+        st.rerun()
     
     # 材料参数输入
     col1, col2, col3 = st.columns(3)
@@ -1904,11 +1888,17 @@ def manual_mode_page():
     
     if st.button("返回首页"):
         st.session_state.page = "home"
-        st.experimental_rerun()  # 立即刷新页面
+        st.rerun()  # 立即刷新页面
 
 def main():
     if 'page' not in st.session_state:
         st.session_state.page = "home"
+    
+    # 初始化会话状态变量
+    if 'confirm_delete' not in st.session_state:
+        st.session_state['confirm_delete'] = False
+    if 'confirm_clear' not in st.session_state:
+        st.session_state['confirm_clear'] = False
     
     st.set_page_config(
         page_title="冲击波参数计算与分析系统",
@@ -1918,11 +1908,11 @@ def main():
     
     # 数据库查看页面
     if st.session_state.page == "view_database":
-        st.title("数据库管理")
+        st.title("数据库查看与管理")
         view_database()
         if st.button("返回首页"):
             st.session_state.page = "home"
-            st.experimental_rerun()
+            st.rerun()
         return
     
     if st.session_state.page == "home":
