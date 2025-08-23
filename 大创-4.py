@@ -300,7 +300,7 @@ def view_database():
                         if count > 0:
                             st.success(f"成功导入 {count} 条记录（跳过包含空值的行）")
                             # 刷新数据
-                            st.experimental_rerun()
+                            st.rerun()  # 修改：使用st.rerun()替代st.experimental_rerun()
                         else:
                             st.warning("没有导入任何记录，请检查数据格式")
                     except Exception as e:
@@ -328,6 +328,7 @@ def view_database():
                         },
                         disabled=df.columns.difference(["选择"]),
                         hide_index=True,
+                        # 移除：selection_mode参数在新版本中已不支持
                     )
                     
                     # 获取选中的记录ID
@@ -342,13 +343,13 @@ def view_database():
                                     if deleted > 0:
                                         st.success(f"成功删除 {deleted} 条记录")
                                         st.session_state['confirm_delete'] = False
-                                        st.experimental_rerun()
+                                        st.rerun()  # 修改：使用st.rerun()替代st.experimental_rerun()
                                     else:
                                         st.warning("删除失败或没有记录被删除")
                                 else:
                                     st.warning("请确认删除操作")
                                     st.session_state['confirm_delete'] = True
-                                    st.experimental_rerun()
+                                    st.rerun()  # 修改：使用st.rerun()替代st.experimental_rerun()
                             else:
                                 st.warning("请先选择要删除的记录")
                     
@@ -359,13 +360,13 @@ def view_database():
                                 if deleted > 0:
                                     st.success(f"成功清空 {del_material} 的所有 {deleted} 条记录")
                                     st.session_state['confirm_clear'] = False
-                                    st.experimental_rerun()
+                                    st.rerun()  # 修改：使用st.rerun()替代st.experimental_rerun()
                                 else:
                                     st.warning("清空失败或该材料没有数据")
                             else:
                                 st.warning("此操作将删除该材料所有数据，请确认")
                                 st.session_state['confirm_clear'] = True
-                                st.experimental_rerun()
+                                st.rerun()  # 修改：使用st.rerun()替代st.experimental_rerun()
                 else:
                     st.info(f"材料 {del_material} 暂无数据可删除")
             else:
@@ -1546,6 +1547,7 @@ def manual_mode_page():
                 st.success(f"已保存到材料 {calc_material} 的数据集，共 {count} 条记录")
     
     # 参数输入
+    # 参数输入
     variables = {
         "f": ["rh0f", "rhf", "Df", "C0f", "Sf", "E0f", "Ef", "uf", "w", "Pf", "gammaf", "Tf"],
         "b": ["rh0b", "rhb", "Db", "C0b", "Sb", "E0b", "Eb", "ub", "Pb", "gammab", "Tb"],
@@ -1924,3 +1926,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
