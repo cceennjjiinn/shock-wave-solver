@@ -133,7 +133,7 @@ def save_results_to_db(results, material_name="Copper"):
         st.error(f"保存失败: {str(e)}")
         return 0
 
-def save_input_parameters(input_params, material_name="Copper"):
+def save_input_parameters(input_params, material_name="Copper", exp_method="manual_input"):
     """保存当前输入的参数到数据库"""
     try:
         # 提取关键参数
@@ -146,7 +146,7 @@ def save_input_parameters(input_params, material_name="Copper"):
             'V': 0,  # 无法直接从输入参数获取
             'rho': input_params.get('rhf') if isinstance(input_params.get('rhf'), (int, float)) else 0,
             'V_V0': 0,  # 无法直接从输入参数获取
-            'exp_method': 'manual_input',
+            'exp_method': exp_method,
             'gamma': input_params.get('gammaf') if isinstance(input_params.get('gammaf'), (int, float)) else 0,
             'T': input_params.get('Tf') if isinstance(input_params.get('Tf'), (int, float)) else 0
         }
@@ -191,9 +191,179 @@ def save_input_data_to_db(input_data, material_name, exp_method="manual_input"):
         st.error(f"保存输入数据失败: {str(e)}")
         return 0
 
+# 新增批量操作函数
+def batch_import_data(df, material_name):
+    """批量导入数据到数据库"""
+    if df.empty:
+        return 0, "导入的数据为空"
+        
+    # 检查必要字段
+    required_columns = ['rho0', 'Us', 'Up']
+    for col in required_columns:
+        if col not in df.columns:
+            return 0, f"缺少必要字段: {col}"
+    
+    try:
+        # 创建一个新的DataFrame用于处理
+        import_df = df.copy()
+        
+        # 统一设置材料名称（如果提供）
+        if material_name:
+            import_df['material'] = material_name
+        elif 'material' not in import_df.columns:
+            return 0, "未提供材料名称且文件中不包含material字段"
+        
+        # 补充缺失的可选字段
+        optional_columns = ['P', 'V', 'rho', 'V_V0', 'exp_method', 'gamma', 'T']
+        for col in optional_columns:
+            if col not in import_df.columns:
+                import_df[col] = None
+                
+        # 过滤无效数据（物理合理性检查）
+        valid_mask = (
+            (import_df['Us'] > import_df['Up']) & 
+            (import_df['Us'] > 0) & 
+            (import_df['Up'] >= 0) & 
+            (import_df['rho0'] > 0)
+        )
+        import_df = import_df[valid_mask]
+        
+        if len(import_df) == 0:
+            return 0, "所有数据均不符合物理合理性要求（Us必须大于Up且均为正数）"
+        
+        with sqlite_engine.begin() as conn:
+            # 批量插入
+            import_df.to_sql(
+                'shock_wave_all_data',
+                conn,
+                if_exists='append',
+                index=False,
+                chunksize=1000
+            )
+        return len(import_df), f"数据导入成功，共导入 {len(import_df)} 条有效记录"
+    except Exception as e:
+        return 0, f"导入失败: {str(e)}"
+
+def batch_delete_data(material_name=None, exp_method=None, ids=None):
+    """批量删除数据"""
+    if not material_name and not exp_method and not ids:
+        return 0, "未提供删除条件"
+        
+    try:
+        with sqlite_engine.begin() as conn:
+            conditions = []
+            params = {}
+            
+            if ids:
+                conditions.append("id IN :ids")
+                params['ids'] = tuple(ids)
+            if material_name:
+                conditions.append("material = :material")
+                params['material'] = material_name
+            if exp_method:
+                conditions.append("exp_method = :method")
+                params['method'] = exp_method
+                
+            if not conditions:
+                return 0, "未提供有效删除条件"
+                
+            query = f"DELETE FROM shock_wave_all_data WHERE {' AND '.join(conditions)}"
+            result = conn.execute(text(query), params)
+            return result.rowcount, f"数据删除成功，共删除 {result.rowcount} 条记录"
+    except Exception as e:
+        return 0, f"删除失败: {str(e)}"
+
+# 修改数据库查看函数，添加批量操作功能
 def view_database():
-    """显示数据库内容"""
-    with st.expander("数据库内容", expanded=True):
+    """显示数据库内容并提供批量操作功能"""
+    st.title("数据库管理")
+    
+    # 批量操作区域
+    with st.expander("批量数据操作", expanded=True):
+        col1, col2 = st.columns(2)
+        
+        # 批量导入功能
+        with col1:
+            st.subheader("批量导入数据")
+            st.caption("导入CSV文件，需包含rho0, Us, Up等必要字段")
+            upload_file = st.file_uploader("上传CSV数据文件", type=["csv"])
+            material_for_import = st.text_input("统一材料名称（可选，为空则使用文件中material字段）")
+            
+            if upload_file is not None:
+                try:
+                    df = pd.read_csv(upload_file)
+                    st.success(f"文件加载成功，共 {len(df)} 条记录")
+                    
+                    with st.expander("预览数据（前10行）", expanded=False):
+                        st.dataframe(df.head(10))
+                        
+                    # 显示数据检查结果
+                    missing_fields = [f for f in ['rho0', 'Us', 'Up'] if f not in df.columns]
+                    if missing_fields:
+                        st.warning(f"数据检查警告：缺少必要字段 {missing_fields}")
+                    else:
+                        invalid_count = len(df[(df['Us'] <= df['Up']) | (df['Us'] <= 0) | (df['Up'] < 0) | (df['rho0'] <= 0)])
+                        if invalid_count > 0:
+                            st.warning(f"数据检查警告：发现 {invalid_count} 条不符合物理合理性的数据（Us必须大于Up且均为正数）")
+                        
+                    if st.button("确认导入"):
+                        count, msg = batch_import_data(df, material_for_import)
+                        if count > 0:
+                            st.success(msg)
+                        else:
+                            st.error(msg)
+                except Exception as e:
+                    st.error(f"文件处理失败: {str(e)}")
+        
+        # 批量删除功能
+        with col2:
+            st.subheader("批量删除数据")
+            st.caption("请谨慎操作，删除后的数据无法恢复")
+            delete_mode = st.radio("删除方式", ["按材料删除", "按实验方法删除", "按ID删除"], horizontal=True)
+            
+            if delete_mode == "按材料删除":
+                materials = get_all_materials()
+                if materials:
+                    del_material = st.selectbox("选择要删除的材料", materials)
+                    if st.button("确认删除该材料所有数据"):
+                        # 二次确认
+                        if st.checkbox("我确认要删除该材料的所有数据，此操作不可恢复"):
+                            count, msg = batch_delete_data(material_name=del_material)
+                            st.info(msg)
+            
+            elif delete_mode == "按实验方法删除":
+                try:
+                    with sqlite_engine.connect() as conn:
+                        methods = conn.execute(text("SELECT DISTINCT exp_method FROM shock_wave_all_data WHERE exp_method IS NOT NULL")).fetchall()
+                        methods = [m[0] for m in methods if m[0]]
+                        
+                        if methods:
+                            del_method = st.selectbox("选择要删除的实验方法", methods)
+                            if st.button("确认删除该方法所有数据"):
+                                if st.checkbox("我确认要删除该实验方法的所有数据，此操作不可恢复"):
+                                    count, msg = batch_delete_data(exp_method=del_method)
+                                    st.info(msg)
+                        else:
+                            st.info("数据库中没有可用的实验方法记录")
+                except Exception as e:
+                    st.error(f"获取实验方法失败: {str(e)}")
+            
+            elif delete_mode == "按ID删除":
+                id_list = st.text_input("输入要删除的ID（逗号分隔）")
+                if st.button("确认删除指定ID数据"):
+                    try:
+                        ids = [int(id.strip()) for id in id_list.split(',') if id.strip()]
+                        if ids:
+                            if st.checkbox(f"我确认要删除ID为{ids}的数据，此操作不可恢复"):
+                                count, msg = batch_delete_data(ids=ids)
+                                st.info(msg)
+                        else:
+                            st.warning("请输入有效的ID列表")
+                    except ValueError:
+                        st.error("请输入有效的ID数字，用逗号分隔")
+    
+    # 数据查看与单行操作区域
+    with st.expander("数据库内容查看", expanded=True):
         materials = get_all_materials()
         if not materials:
             st.info("数据库中暂无数据")
@@ -206,9 +376,37 @@ def view_database():
             st.info(f"材料 {selected_material} 暂无数据")
         else:
             st.info(f"材料 {selected_material} 共有 {len(df)} 条记录")
-            st.dataframe(df)
             
-            # 提供下载选项
+            # 添加选择框用于单行删除
+            df_with_selection = st.data_editor(
+                df,
+                column_config={
+                    "id": st.column_config.NumberColumn("ID", disabled=True),
+                    "material": st.column_config.TextColumn("材料", disabled=True),
+                    "rho0": st.column_config.NumberColumn("初始密度 (g/cm³)", disabled=True),
+                    "Us": st.column_config.NumberColumn("冲击波速度 (km/s)", disabled=True),
+                    "Up": st.column_config.NumberColumn("粒子速度 (km/s)", disabled=True),
+                    "P": st.column_config.NumberColumn("冲击压力 (GPa)", disabled=True),
+                    "exp_method": st.column_config.TextColumn("实验方法", disabled=True)
+                },
+                disabled=True,
+                hide_index=True,
+                num_rows="dynamic",
+                use_container_width=True
+            )
+            
+            # 提取选中的ID
+            selected_ids = df_with_selection[df_with_selection['id'].isin(df['id'])]['id'].tolist()
+            
+            # 单行删除功能
+            if selected_ids:
+                st.write(f"已选中 {len(selected_ids)} 条记录")
+                if st.button("删除选中记录"):
+                    if st.checkbox("我确认要删除选中的记录，此操作不可恢复"):
+                        count, msg = batch_delete_data(ids=selected_ids)
+                        st.info(msg)
+            
+            # 下载选项
             csv = df.to_csv(index=False)
             st.download_button(
                 label=f"下载 {selected_material} 数据",
@@ -1706,7 +1904,7 @@ def main():
     
     # 数据库查看页面
     if st.session_state.page == "view_database":
-        st.title("数据库查看")
+        st.title("数据库管理")
         view_database()
         if st.button("返回首页"):
             st.session_state.page = "home"
