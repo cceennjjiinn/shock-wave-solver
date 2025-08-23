@@ -65,7 +65,6 @@ def init_database():
 init_database()
 
 # 数据库操作函数 - 优化查询效率
-@st.cache_data(ttl=3600)  # 缓存1小时
 def get_all_materials():
     try:
         query = text("SELECT DISTINCT material FROM shock_wave_all_data")
@@ -191,7 +190,7 @@ def save_input_data_to_db(input_data, material_name, exp_method="manual_input"):
         st.error(f"保存输入数据失败: {str(e)}")
         return 0
 
-# 新增批量操作函数
+# 批量操作函数
 def batch_import_data(df, material_name):
     """批量导入数据到数据库"""
     if df.empty:
@@ -273,7 +272,7 @@ def batch_delete_data(material_name=None, exp_method=None, ids=None):
     except Exception as e:
         return 0, f"删除失败: {str(e)}"
 
-# 修改数据库查看函数，添加批量操作功能
+# 修复数据库查看函数，解决选择框和删除问题
 def view_database():
     """显示数据库内容并提供批量操作功能"""
     st.title("数据库管理")
@@ -310,6 +309,8 @@ def view_database():
                         count, msg = batch_import_data(df, material_for_import)
                         if count > 0:
                             st.success(msg)
+                            # 导入成功后刷新数据
+                            st.experimental_rerun()
                         else:
                             st.error(msg)
                 except Exception as e:
@@ -325,11 +326,15 @@ def view_database():
                 materials = get_all_materials()
                 if materials:
                     del_material = st.selectbox("选择要删除的材料", materials)
-                    if st.button("确认删除该材料所有数据"):
+                    confirm_del = st.button("确认删除该材料所有数据")
+                    
+                    if confirm_del:
                         # 二次确认
                         if st.checkbox("我确认要删除该材料的所有数据，此操作不可恢复"):
                             count, msg = batch_delete_data(material_name=del_material)
                             st.info(msg)
+                            # 删除成功后刷新数据
+                            st.experimental_rerun()
             
             elif delete_mode == "按实验方法删除":
                 try:
@@ -339,10 +344,14 @@ def view_database():
                         
                         if methods:
                             del_method = st.selectbox("选择要删除的实验方法", methods)
-                            if st.button("确认删除该方法所有数据"):
+                            confirm_del = st.button("确认删除该方法所有数据")
+                            
+                            if confirm_del:
                                 if st.checkbox("我确认要删除该实验方法的所有数据，此操作不可恢复"):
                                     count, msg = batch_delete_data(exp_method=del_method)
                                     st.info(msg)
+                                    # 删除成功后刷新数据
+                                    st.experimental_rerun()
                         else:
                             st.info("数据库中没有可用的实验方法记录")
                 except Exception as e:
@@ -350,19 +359,23 @@ def view_database():
             
             elif delete_mode == "按ID删除":
                 id_list = st.text_input("输入要删除的ID（逗号分隔）")
-                if st.button("确认删除指定ID数据"):
+                confirm_del = st.button("确认删除指定ID数据")
+                
+                if confirm_del:
                     try:
                         ids = [int(id.strip()) for id in id_list.split(',') if id.strip()]
                         if ids:
                             if st.checkbox(f"我确认要删除ID为{ids}的数据，此操作不可恢复"):
                                 count, msg = batch_delete_data(ids=ids)
                                 st.info(msg)
+                                # 删除成功后刷新数据
+                                st.experimental_rerun()
                         else:
                             st.warning("请输入有效的ID列表")
                     except ValueError:
                         st.error("请输入有效的ID数字，用逗号分隔")
     
-    # 数据查看与单行操作区域
+    # 数据查看与单行操作区域 - 修复选择框和删除功能
     with st.expander("数据库内容查看", expanded=True):
         materials = get_all_materials()
         if not materials:
@@ -370,6 +383,7 @@ def view_database():
             return
             
         selected_material = st.selectbox("选择材料查看数据", materials)
+        # 每次选择材料时都重新查询，避免缓存问题
         df = get_material_data(selected_material)
         
         if df.empty:
@@ -377,8 +391,8 @@ def view_database():
         else:
             st.info(f"材料 {selected_material} 共有 {len(df)} 条记录")
             
-            # 添加选择框用于单行删除
-            df_with_selection = st.data_editor(
+            # 修复数据编辑器配置：启用选择模式，禁用添加新行
+            edited_df = st.data_editor(
                 df,
                 column_config={
                     "id": st.column_config.NumberColumn("ID", disabled=True),
@@ -389,14 +403,15 @@ def view_database():
                     "P": st.column_config.NumberColumn("冲击压力 (GPa)", disabled=True),
                     "exp_method": st.column_config.TextColumn("实验方法", disabled=True)
                 },
-                disabled=True,
+                disabled=True,  # 保持数据只读
                 hide_index=True,
-                num_rows="dynamic",
+                selection_mode="multi-row",  # 启用多行选择功能
+                num_rows="fixed",  # 禁用添加新行，解决加号报错问题
                 use_container_width=True
             )
             
-            # 提取选中的ID
-            selected_ids = df_with_selection[df_with_selection['id'].isin(df['id'])]['id'].tolist()
+            # 正确获取选中行的ID
+            selected_ids = [row['id'] for row in edited_df['selected_rows']]
             
             # 单行删除功能
             if selected_ids:
@@ -405,6 +420,8 @@ def view_database():
                     if st.checkbox("我确认要删除选中的记录，此操作不可恢复"):
                         count, msg = batch_delete_data(ids=selected_ids)
                         st.info(msg)
+                        # 删除后刷新数据
+                        st.experimental_rerun()
             
             # 下载选项
             csv = df.to_csv(index=False)
@@ -452,7 +469,6 @@ def fit_hugoniot(df):
     C0 = coeffs[1]   # 截距（零压声速）
     return C0, S
 
-@st.cache_data(ttl=3600)  # 缓存拟合结果
 def fit_material_data(df, material_name, material_type):
     if df is None or df.empty:
         st.warning(f"{material_type}材料'{material_name}'没有数据")
@@ -615,7 +631,6 @@ def solve_numerically(eqs, sym_vars, initial_guess):
     return None
 
 # 冲击波关系图绘制 - 根据实验方法区分颜色
-@st.cache_data(ttl=3600)  # 缓存图像结果
 def generate_shock_plots(df, C0, S, material_name, material_type, use_english=False):
     # 数据量大时进行采样
     if len(df) > 1000:
@@ -790,7 +805,6 @@ def display_material_plots(df, material_name, material_type, use_english=False):
         st.info(f"没有可用数据生成{material_type}材料{material_name}的图像")
 
 # 结果绘图函数
-@st.cache_data(ttl=3600)  # 缓存图像结果
 def plot_results_streamlit(results):
     if not results:
         return None
@@ -867,7 +881,7 @@ def home_page():
     # 查看数据库快捷入口
     if st.button("查看数据库"):
         st.session_state.page = "view_database"
-        st.rerun()
+        st.experimental_rerun()
     
     st.write("选择操作模式：")
     
@@ -875,11 +889,11 @@ def home_page():
     with col1:
         if st.button("使用数据库数据"):
             st.session_state.page = "database_mode"
-            st.rerun()  # 立即刷新页面
+            st.experimental_rerun()  # 立即刷新页面
     with col2:
         if st.button("手动输入参数"):
             st.session_state.page = "manual_mode"
-            st.rerun()  # 立即刷新页面
+            st.experimental_rerun()  # 立即刷新页面
 
 def database_mode_page():
     st.title("数据库模式")
@@ -888,7 +902,7 @@ def database_mode_page():
     # 查看数据库快捷入口
     if st.button("查看数据库"):
         st.session_state.page = "view_database"
-        st.rerun()
+        st.experimental_rerun()
     
     materials = get_all_materials()
     if not materials:
@@ -1378,7 +1392,7 @@ def database_mode_page():
     
     if st.button("返回首页"):
         st.session_state.page = "home"
-        st.rerun()  # 立即刷新页面
+        st.experimental_rerun()  # 立即刷新页面
 
 def manual_mode_page():
     st.title("手动输入模式")
@@ -1387,7 +1401,7 @@ def manual_mode_page():
     # 查看数据库快捷入口
     if st.button("查看数据库"):
         st.session_state.page = "view_database"
-        st.rerun()
+        st.experimental_rerun()
     
     # 材料参数输入
     col1, col2, col3 = st.columns(3)
@@ -1890,7 +1904,7 @@ def manual_mode_page():
     
     if st.button("返回首页"):
         st.session_state.page = "home"
-        st.rerun()  # 立即刷新页面
+        st.experimental_rerun()  # 立即刷新页面
 
 def main():
     if 'page' not in st.session_state:
@@ -1908,7 +1922,7 @@ def main():
         view_database()
         if st.button("返回首页"):
             st.session_state.page = "home"
-            st.rerun()
+            st.experimental_rerun()
         return
     
     if st.session_state.page == "home":
