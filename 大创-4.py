@@ -1502,33 +1502,36 @@ def manual_mode_page():
     
     col1, col2, col3 = st.columns(3)
     with col1:
-        U_s = st.number_input("冲击波速度 Us (km/s)", min_value=0.01, value=5.0, help="必须大于粒子速度 Up")
-        Us_err = st.number_input("Us 误差 (km/s)", 0.1, help="测量误差")
+        U_s = st.number_input("冲击波速度 Us (km/s)", min_value=0.01, value=5.0, help="必须大于粒子速度 Up", key="us_input")
+        Us_err = st.number_input("Us 误差 (km/s)", 0.1, help="测量误差", key="us_err_input")
     with col2:
-        u_p = st.number_input("粒子速度 Up (km/s)", min_value=0.0, value=1.0, help="必须小于冲击波速度 Us")
-        Up_err = st.number_input("Up 误差 (km/s)", 0.05, help="测量误差")
+        u_p = st.number_input("粒子速度 Up (km/s)", min_value=0.0, value=1.0, help="必须小于冲击波速度 Us", key="up_input")
+        Up_err = st.number_input("Up 误差 (km/s)", 0.05, help="测量误差", key="up_err_input")
     with col3:
         # 根据所选材料自动选择密度和相关参数
         if calc_material == flyer_material:
-            rho0 = st.number_input(f"初始密度 ρ0 (g/cm³) - {flyer_material}", min_value=0.01, value=8.96)
+            rho0 = st.number_input(f"初始密度 ρ0 (g/cm³) - {flyer_material}", min_value=0.01, value=8.96, key="rho0_flyer_input")
             gamma = gamma_flyer
             Cv = Cv_flyer
         elif calc_material == base_material:
-            rho0 = st.number_input(f"初始密度 ρ0 (g/cm³) - {base_material}", min_value=0.01, value=2.7)
+            rho0 = st.number_input(f"初始密度 ρ0 (g/cm³) - {base_material}", min_value=0.01, value=2.7, key="rho0_base_input")
             gamma = gamma_base
             Cv = Cv_base
         else:
-            rho0 = st.number_input(f"初始密度 ρ0 (g/cm³) - {sample_material}", min_value=0.01, value=8.96)
+            rho0 = st.number_input(f"初始密度 ρ0 (g/cm³) - {sample_material}", min_value=0.01, value=8.96, key="rho0_sample_input")
             gamma = gamma_sample
             Cv = Cv_sample
-        rho0_err = st.number_input("ρ0 误差 (g/cm³)", 0.02, help="测量误差")
+        rho0_err = st.number_input("ρ0 误差 (g/cm³)", 0.02, help="测量误差", key="rho0_err_input")
     
-    # 存储计算结果用于保存
-    calculation_result = None
+    # 初始化会话状态以存储计算结果
+    if 'calculation_result' not in st.session_state:
+        st.session_state.calculation_result = None
     
-    if st.button("计算冲击波参数"):
+    # 计算按钮
+    if st.button("计算冲击波参数", key="calc_button"):
         if U_s <= u_p:
             st.error("物理参数错误: 冲击波速度 Us 必须大于粒子速度 Up")
+            st.session_state.calculation_result = None
         else:
             P, V, rho, V_V0, T = calculate_shock_parameters(
                 U_s, u_p, rho0, gamma, Cv
@@ -1540,7 +1543,8 @@ def manual_mode_page():
                 param_errors={'rho0': rho0_err, 'Us': Us_err, 'Up': Up_err}
             )
             
-            calculation_result = {
+            # 存储计算结果到会话状态
+            st.session_state.calculation_result = {
                 'rho0': rho0, 'Us': U_s, 'Up': u_p, 
                 'P': P, 'V': V, 'rho': rho, 'V_V0': V_V0,
                 'gamma': gamma, 'T': T,
@@ -1557,13 +1561,24 @@ def manual_mode_page():
             - 比体积比 V/V0 = {V_V0:.4f}
             """)
     
-    # 保存输入数据到数据库（确保使用英文材料名称）
-    if calculation_result:
-        if st.button("保存快速计算结果到数据库"):
-            # 确保材料名称是英文
-            count = save_input_data_to_db(calculation_result, calc_material, exp_method)
+    # 保存快速计算结果按钮
+    if st.button("保存快速计算结果到数据库", key="save_quick_result"):
+        # 检查是否有计算结果
+        if st.session_state.calculation_result is None:
+            st.error("请先点击'计算冲击波参数'获取结果")
+        else:
+            # 保存结果到数据库
+            count = save_input_data_to_db(
+                st.session_state.calculation_result, 
+                calc_material, 
+                exp_method
+            )
             if count > 0:
                 st.success(f"已保存到 {calc_material} 数据集，共 {count} 条记录")
+                # 清除会话状态中的计算结果，避免重复保存
+                st.session_state.calculation_result = None
+                # 刷新页面以更新数据库视图
+                st.rerun()
     
     # 参数输入
     variables = {
@@ -1919,6 +1934,8 @@ def main():
         st.session_state['confirm_delete'] = False
     if 'confirm_clear' not in st.session_state:
         st.session_state['confirm_clear'] = False
+    if 'calculation_result' not in st.session_state:
+        st.session_state.calculation_result = None
     
     st.set_page_config(
         page_title="冲击波参数计算与分析系统",
