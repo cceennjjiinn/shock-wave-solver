@@ -138,7 +138,7 @@ def save_results_to_db(results, material_name="Copper"):
                     'V_V0': result.get('V_V0', 0),
                     'exp_method': 'calculated',
                     'gamma': result.get('gammaf', 0),
-                    'T': result.get('Tf', 0)
+                    'T': result.get('Tf', 0) if 'Tf' in result else 0
                 }
                 stmt = text("""
                     INSERT INTO shock_wave_all_data 
@@ -443,7 +443,7 @@ def view_database():
                 )
 
 # 冲击波参数计算（包含温度计算）
-def calculate_shock_parameters(U_s, u_p, rho0, gamma=2.0, Cv=385, T0=300):
+def calculate_shock_parameters(U_s, u_p, rho0, gamma=2.0, Cv=385, T0=300, calculate_temp=True):
     """根据Rankine-Hugoniot守恒关系计算冲击波参数"""
     # 动量守恒: P = rho0 * U_s * u_p
     P = rho0 * U_s * u_p
@@ -457,11 +457,13 @@ def calculate_shock_parameters(U_s, u_p, rho0, gamma=2.0, Cv=385, T0=300):
     # 比体积比: V/V0 = 1 - u_p/U_s
     V_V0 = V * rho0  # 由于V0 = 1/rho0，V/V0 = V * rho0
     
-    # 温度计算（Mie-Grüneisen方程近似）
-    # 单位转换: 1 GPa·cm³/g = 1e5 J/kg
-    E_shock = 0.5 * P * (1/rho0 - V) * 1e6  # 冲击内能 (J/kg)
-    # 基于Mie-Grüneisen方程简化形式（适用于弱冲击，忽略体积修正项）
-    T = T0 + (E_shock) / (Cv * (1 + gamma/2))  # 冲击温度 (K)
+    T = None
+    if calculate_temp:
+        # 温度计算（Mie-Grüneisen方程近似）
+        # 单位转换: 1 GPa·cm³/g = 1e5 J/kg
+        E_shock = 0.5 * P * (1/rho0 - V) * 1e6  # 冲击内能 (J/kg)
+        # 基于Mie-Grüneisen方程简化形式（适用于弱冲击，忽略体积修正项）
+        T = T0 + (E_shock) / (Cv * (1 + gamma/2))  # 冲击温度 (K)
     
     return P, V, rho, V_V0, T
 
@@ -827,7 +829,7 @@ def display_material_plots(df, material_name, material_type):
 
 # 结果绘图函数 - 使用英文标签
 @st.cache_data(ttl=3600)  # 缓存图像结果
-def plot_results_streamlit(results):
+def plot_results_streamlit(results, calculate_temp=True):
     if not results:
         return None
         
@@ -835,12 +837,9 @@ def plot_results_streamlit(results):
     if len(results) > 1000:
         results = results[:1000]
         
-    fig = plt.figure(figsize=(18, 9))
-    
-    # 温度相关数据
-    tf_values = [r.get('Tf', 0) for r in results]
-    tb_values = [r.get('Tb', 0) for r in results]
-    ts_values = [r.get('Ts', 0) for r in results]
+    # 确定子图数量
+    subplot_count = 4 if calculate_temp else 3
+    fig = plt.figure(figsize=(18, 9) if calculate_temp else (18, 7))
     
     # 原始数据
     pf_values = [r.get('Pf', 0) for r in results]
@@ -849,7 +848,7 @@ def plot_results_streamlit(results):
     rhf_values = [r.get('rhf', 0) for r in results]
     
     # 1. 压力-粒子速度图（带误差棒）
-    ax1 = fig.add_subplot(221)
+    ax1 = fig.add_subplot(221 if calculate_temp else 221)
     ax1.errorbar(uf_values, pf_values, 
                  yerr=[r.get('Pf_err', 0.1) for r in results],
                  xerr=[r.get('uf_err', 0.05) for r in results],
@@ -860,17 +859,24 @@ def plot_results_streamlit(results):
     ax1.legend()
     ax1.grid(True)
     
-    # 2. 温度-压力图
-    ax2 = fig.add_subplot(222)
-    ax2.scatter(pf_values, tf_values, c='orange', label='Flyer Temperature')
-    ax2.set_xlabel('Shock Pressure P (GPa)')
-    ax2.set_ylabel('Shock Temperature T (K)')
-    ax2.set_title('Temperature-Pressure Relationship')
-    ax2.legend()
-    ax2.grid(True)
+    # 2. 温度-压力图（仅当计算温度时显示）
+    ax2 = None
+    if calculate_temp:
+        # 温度相关数据
+        tf_values = [r.get('Tf', 0) for r in results]
+        tb_values = [r.get('Tb', 0) for r in results]
+        ts_values = [r.get('Ts', 0) for r in results]
+        
+        ax2 = fig.add_subplot(222)
+        ax2.scatter(pf_values, tf_values, c='orange', label='Flyer Temperature')
+        ax2.set_xlabel('Shock Pressure P (GPa)')
+        ax2.set_ylabel('Shock Temperature T (K)')
+        ax2.set_title('Temperature-Pressure Relationship')
+        ax2.legend()
+        ax2.grid(True)
     
     # 3. 冲击波速度-粒子速度图
-    ax3 = fig.add_subplot(223)
+    ax3 = fig.add_subplot(223 if calculate_temp else 222)
     ax3.scatter(uf_values, df_values, c='blue', label='Flyer')
     ax3.set_xlabel('Particle Velocity Up (km/s)')
     ax3.set_ylabel('Shock Wave Velocity Us (km/s)')
@@ -879,7 +885,7 @@ def plot_results_streamlit(results):
     ax3.grid(True)
     
     # 4. 密度-压力图
-    ax4 = fig.add_subplot(224)
+    ax4 = fig.add_subplot(224 if calculate_temp else 223)
     ax4.scatter(pf_values, rhf_values, c='green', label='Flyer')
     ax4.set_xlabel('Shock Pressure P (GPa)')
     ax4.set_ylabel('Compressed Density (g/cm³)')
@@ -925,6 +931,10 @@ def database_mode_page():
     st.title("数据库模式")
     st.write("从数据库加载材料数据，基于Hugoniot关系拟合参数并求解")
     
+    # 添加温度计算选项
+    calculate_temp = st.checkbox("进行温度相关计算", value=True, 
+                                 help="勾选则计算冲击温度，需要格吕奈森系数和比热容参数")
+    
     # 查看数据库快捷入口
     if st.button("查看数据库"):
         st.session_state.page = "view_database"
@@ -943,8 +953,8 @@ def database_mode_page():
     with col3:
         sample_material = st.selectbox("样品材料", materials, key="sample_material")
     
-    # 检测相同材料并提供共享选项 - 修正逻辑：只有材料相同时才显示共享选项
-    st.subheader("材料参数共享设置")
+    # 检测相同材料并提供共享选项 - 仅共享初始密度、体声速、Hugoniot参数、格吕奈森系数
+    st.subheader("材料参数共享设置（仅共享：初始密度、体声速、Hugoniot参数、格吕奈森系数）")
     material_relations = {}
     
     # 飞片与基板是否相同
@@ -967,39 +977,39 @@ def database_mode_page():
     material_relations['flyer_sample'] = share_flyer_sample
     
     # 按需查询字段以减少数据传输，确保包含exp_method
-    flyer_df = get_material_data(flyer_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho', 'exp_method'])
+    flyer_df = get_material_data(flyer_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho', 'exp_method', 'gamma'])
     
-    # 根据共享设置决定是否复用数据
+    # 根据共享设置决定是否复用数据（仅共享指定参数）
     if material_relations['flyer_base']:
         base_df = flyer_df.copy()
     else:
-        base_df = get_material_data(base_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho', 'exp_method'])
+        base_df = get_material_data(base_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho', 'exp_method', 'gamma'])
     
     if material_relations['base_sample']:
         sample_df = base_df.copy()
     elif material_relations['flyer_sample']:
         sample_df = flyer_df.copy()
     else:
-        sample_df = get_material_data(sample_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho', 'exp_method'])
+        sample_df = get_material_data(sample_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho', 'exp_method', 'gamma'])
     
     # 为每种材料类型拟合数据并清晰标注
     with st.spinner(f"正在拟合飞片材料 {flyer_material} 数据..."):
         flyer_fit = fit_material_data(flyer_df, flyer_material, "飞片")
     
-    # 根据共享设置决定是否复用拟合结果
+    # 根据共享设置决定是否复用拟合结果（仅共享指定参数）
     if material_relations['flyer_base']:
         base_fit = flyer_fit
-        st.info(f"基板与飞片材料相同，复用飞片拟合参数")
+        st.info(f"基板与飞片材料相同，复用飞片的初始密度、体声速、Hugoniot参数和格吕奈森系数")
     else:
         with st.spinner(f"正在拟合基板材料 {base_material} 数据..."):
             base_fit = fit_material_data(base_df, base_material, "基板")
     
     if material_relations['base_sample']:
         sample_fit = base_fit
-        st.info(f"样品与基板材料相同，复用基板拟合参数")
+        st.info(f"样品与基板材料相同，复用基板的初始密度、体声速、Hugoniot参数和格吕奈森系数")
     elif material_relations['flyer_sample']:
         sample_fit = flyer_fit
-        st.info(f"样品与飞片材料相同，复用飞片拟合参数")
+        st.info(f"样品与飞片材料相同，复用飞片的初始密度、体声速、Hugoniot参数和格吕奈森系数")
     else:
         with st.spinner(f"正在拟合样品材料 {sample_material} 数据..."):
             sample_fit = fit_material_data(sample_df, sample_material, "样品")
@@ -1039,6 +1049,38 @@ def database_mode_page():
     input_params = {}
     sym_vars = {}
     
+    # 比热容设置（仅当计算温度时显示）
+    Cv_values = {}
+    if calculate_temp:
+        st.subheader("比热容设置（用于温度计算）")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            Cv_values['f'] = st.number_input(f"飞片比热容 Cv (J/(kg·K)) ({flyer_material})", 
+                                            value=385.0, min_value=1.0, help="铜约为385，铝约为900")
+        with col2:
+            if material_relations['flyer_base']:
+                Cv_values['b'] = Cv_values['f']
+                st.number_input(f"基板比热容 Cv (J/(kg·K)) ({base_material})", 
+                               value=Cv_values['b'], min_value=1.0, disabled=True)
+                st.info("与飞片共享比热容参数")
+            else:
+                Cv_values['b'] = st.number_input(f"基板比热容 Cv (J/(kg·K)) ({base_material})", 
+                                                value=385.0, min_value=1.0)
+        with col3:
+            if material_relations['base_sample']:
+                Cv_values['s'] = Cv_values['b']
+                st.number_input(f"样品比热容 Cv (J/(kg·K)) ({sample_material})", 
+                               value=Cv_values['s'], min_value=1.0, disabled=True)
+                st.info("与基板共享比热容参数")
+            elif material_relations['flyer_sample']:
+                Cv_values['s'] = Cv_values['f']
+                st.number_input(f"样品比热容 Cv (J/(kg·K)) ({sample_material})", 
+                               value=Cv_values['s'], min_value=1.0, disabled=True)
+                st.info("与飞片共享比热容参数")
+            else:
+                Cv_values['s'] = st.number_input(f"样品比热容 Cv (J/(kg·K)) ({sample_material})", 
+                                                value=385.0, min_value=1.0)
+    
     # 飞片参数
     with st.expander(f"{flyer_material} 飞片参数", expanded=True):
         cols = st.columns(3)
@@ -1071,6 +1113,10 @@ def database_mode_page():
             "Tf": "K"
         }
         for i, var in enumerate(variables["f"]):
+            # 温度参数仅在计算温度时显示
+            if var.startswith('T') and not calculate_temp:
+                continue
+                
             with cols[i % 3]:
                 default_val = None
                 if default_params["f"] and var in ["rh0f", "C0f", "Sf"]:
@@ -1081,7 +1127,15 @@ def database_mode_page():
                     elif var == "Sf":
                         default_val = default_params["f"]["S"]
                 elif var == "gammaf":
-                    default_val = 2.0  # 默认格吕奈森系数
+                    # 尝试从数据中获取平均格吕奈森系数
+                    if not flyer_df.empty and 'gamma' in flyer_df.columns:
+                        gamma_vals = flyer_df['gamma'].dropna()
+                        if len(gamma_vals) > 0:
+                            default_val = gamma_vals.mean()
+                        else:
+                            default_val = 2.0
+                    else:
+                        default_val = 2.0  # 默认格吕奈森系数
                 val = get_input_streamlit(
                     label=var,
                     var_name=var,
@@ -1093,29 +1147,49 @@ def database_mode_page():
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
     
-    # 基板参数 - 根据共享设置决定是否禁用输入
-    disabled_base = material_relations['flyer_base']
-    with st.expander(f"{base_material} 基板参数 {'(与飞片共享)' if disabled_base else ''}", expanded=not disabled_base):
-        if disabled_base:
-            st.info(f"基板与飞片均为{flyer_material}，将使用飞片参数值")
+    # 基板参数 - 根据共享设置决定是否禁用输入（仅共享指定参数）
+    disabled_base_vars = {}
+    if material_relations['flyer_base']:
+        # 仅共享初始密度、体声速、Hugoniot参数、格吕奈森系数
+        disabled_base_vars = {
+            "rh0b": True, "C0b": True, "Sb": True, "gammab": True,
+            "rhb": False, "Db": False, "E0b": False, "Eb": False, 
+            "ub": False, "Pb": False, "Tb": not calculate_temp
+        }
+    else:
+        disabled_base_vars = {var: False for var in variables["b"]}
+    
+    with st.expander(f"{base_material} 基板参数 {'(与飞片共享部分参数)' if material_relations['flyer_base'] else ''}", expanded=not material_relations['flyer_base']):
+        if material_relations['flyer_base']:
+            st.info(f"基板与飞片材料相同，共享初始密度、体声速、Hugoniot参数和格吕奈森系数")
         
         cols = st.columns(3)
         for i, var in enumerate(variables["b"]):
+            # 温度参数仅在计算温度时显示
+            if var.startswith('T') and not calculate_temp:
+                continue
+                
             with cols[i % 3]:
                 default_val = None
                 # 如果共享参数，使用飞片的参数作为默认值
-                if disabled_base:
+                if material_relations['flyer_base'] and var in ["rh0b", "C0b", "Sb", "gammab"]:
                     flyer_var_map = {
-                        "rh0b": "rh0f", "rhb": "rhf", "Db": "Df", 
-                        "C0b": "C0f", "Sb": "Sf", "E0b": "E0f", 
-                        "Eb": "Ef", "ub": "uf", "Pb": "Pf", 
-                        "gammab": "gammaf", "Tb": "Tf"
+                        "rh0b": "rh0f", "C0b": "C0f", 
+                        "Sb": "Sf", "gammab": "gammaf"
                     }
                     flyer_equivalent = flyer_var_map.get(var)
                     if flyer_equivalent and flyer_equivalent in input_params:
                         default_val = input_params[flyer_equivalent]
-                elif var == "gammab":
-                    default_val = 2.0  # 默认格吕奈森系数
+                elif var == "gammab" and not material_relations['flyer_base']:
+                    # 尝试从数据中获取平均格吕奈森系数
+                    if not base_df.empty and 'gamma' in base_df.columns:
+                        gamma_vals = base_df['gamma'].dropna()
+                        if len(gamma_vals) > 0:
+                            default_val = gamma_vals.mean()
+                        else:
+                            default_val = 2.0
+                    else:
+                        default_val = 2.0  # 默认格吕奈森系数
                 
                 val = get_input_streamlit(
                     label=var,
@@ -1138,43 +1212,66 @@ def database_mode_page():
                          "基板冲击压力" if var == "Pb" else
                          "基板格吕奈森系数" if var == "gammab" else
                          "基板冲击温度",
-                    disabled=disabled_base
+                    disabled=disabled_base_vars.get(var, False)
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
     
-    # 样品参数 - 根据共享设置决定是否禁用输入
-    disabled_sample = material_relations['base_sample'] or material_relations['flyer_sample']
-    share_source = "基板" if material_relations['base_sample'] else "飞片"
+    # 样品参数 - 根据共享设置决定是否禁用输入（仅共享指定参数）
+    disabled_sample_vars = {}
+    share_source = ""
+    if material_relations['base_sample']:
+        share_source = "基板"
+        # 仅共享初始密度、体声速、Hugoniot参数、格吕奈森系数
+        disabled_sample_vars = {
+            "rh0s": True, "C0s": True, "Ss": True, "gammas": True,
+            "rhs": False, "Ds": False, "E0s": False, "Es": False, 
+            "us": False, "Ps": False, "Ts": not calculate_temp
+        }
+    elif material_relations['flyer_sample']:
+        share_source = "飞片"
+        # 仅共享初始密度、体声速、Hugoniot参数、格吕奈森系数
+        disabled_sample_vars = {
+            "rh0s": True, "C0s": True, "Ss": True, "gammas": True,
+            "rhs": False, "Ds": False, "E0s": False, "Es": False, 
+            "us": False, "Ps": False, "Ts": not calculate_temp
+        }
+    else:
+        disabled_sample_vars = {var: False for var in variables["s"]}
     
-    with st.expander(f"{sample_material} 样品参数 {'(与' + share_source + '共享)' if disabled_sample else ''}", expanded=not disabled_sample):
-        if disabled_sample:
-            st.info(f"样品与{share_source}均为{sample_material}，将使用{share_source}参数值")
+    with st.expander(f"{sample_material} 样品参数 {'(与' + share_source + '共享部分参数)' if share_source else ''}", expanded=not (material_relations['base_sample'] or material_relations['flyer_sample'])):
+        if share_source:
+            st.info(f"样品与{share_source}材料相同，共享初始密度、体声速、Hugoniot参数和格吕奈森系数")
         
         cols = st.columns(3)
         for i, var in enumerate(variables["s"]):
+            # 温度参数仅在计算温度时显示
+            if var.startswith('T') and not calculate_temp:
+                continue
+                
             with cols[i % 3]:
                 default_val = None
                 # 如果共享参数，使用相应来源的参数作为默认值
-                if disabled_sample:
+                if share_source:
                     source_var_map = {
                         "rh0s": "rh0b" if material_relations['base_sample'] else "rh0f",
-                        "rhs": "rhb" if material_relations['base_sample'] else "rhf",
-                        "Ds": "Db" if material_relations['base_sample'] else "Df",
                         "C0s": "C0b" if material_relations['base_sample'] else "C0f",
                         "Ss": "Sb" if material_relations['base_sample'] else "Sf",
-                        "E0s": "E0b" if material_relations['base_sample'] else "E0f",
-                        "Es": "Eb" if material_relations['base_sample'] else "Ef",
-                        "us": "ub" if material_relations['base_sample'] else "uf",
-                        "Ps": "Pb" if material_relations['base_sample'] else "Pf",
-                        "gammas": "gammab" if material_relations['base_sample'] else "gammaf",
-                        "Ts": "Tb" if material_relations['base_sample'] else "Tf"
+                        "gammas": "gammab" if material_relations['base_sample'] else "gammaf"
                     }
                     source_equivalent = source_var_map.get(var)
                     if source_equivalent and source_equivalent in input_params:
                         default_val = input_params[source_equivalent]
                 elif var == "gammas":
-                    default_val = 2.0  # 默认格吕奈森系数
+                    # 尝试从数据中获取平均格吕奈森系数
+                    if not sample_df.empty and 'gamma' in sample_df.columns:
+                        gamma_vals = sample_df['gamma'].dropna()
+                        if len(gamma_vals) > 0:
+                            default_val = gamma_vals.mean()
+                        else:
+                            default_val = 2.0
+                    else:
+                        default_val = 2.0  # 默认格吕奈森系数
                 
                 val = get_input_streamlit(
                     label=var,
@@ -1184,7 +1281,7 @@ def database_mode_page():
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Ds", "C0s", "us"] else 
                          "GPa·cm³/g" if var in ["E0s", "Es"] else
-                         "GPa" if var == "Ps" else 
+                         "GPa" if var == "Ps" else
                          "K" if var == "Ts" else "无量纲",
                     desc="样品初始密度" if var == "rh0s" else
                          "样品压缩密度" if var == "rhs" else
@@ -1197,7 +1294,7 @@ def database_mode_page():
                          "样品冲击压力" if var == "Ps" else
                          "样品格吕奈森系数" if var == "gammas" else
                          "样品冲击温度",
-                    disabled=disabled_sample
+                    disabled=disabled_sample_vars.get(var, False)
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
@@ -1278,6 +1375,15 @@ def database_mode_page():
                 Eq(sym_vars['uf'] - sym_vars['ub'], 0)
             ]
             
+            # 温度相关方程（仅当计算温度时添加）
+            if calculate_temp:
+                # 飞片温度方程 (Mie-Grüneisen)
+                eqs.append(Eq(sym_vars['Tf'] - 300 - (sym_vars['Ef'] - sym_vars['E0f'])*1e6 / 
+                             (Cv_values['f'] * (1 + sym_vars['gammaf']/2)), 0))
+                # 基板温度方程
+                eqs.append(Eq(sym_vars['Tb'] - 300 - (sym_vars['Eb'] - sym_vars['E0b'])*1e6 / 
+                             (Cv_values['b'] * (1 + sym_vars['gammab']/2)), 0))
+            
             try:
                 # 检查样品和基板是否为同一材料
                 cond = all([
@@ -1297,11 +1403,15 @@ def database_mode_page():
                     Eq(sym_vars['rhb'] - sym_vars['rhs'], 0), # 密度连续性
                     Eq(sym_vars['Db'] - sym_vars['Ds'], 0),  # 冲击波速度连续性
                     # 样品能量守恒
-                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0),
-                    # 温度参数连续性
-                    Eq(sym_vars['Tb'] - sym_vars['Ts'], 0),
-                    Eq(sym_vars['gammab'] - sym_vars['gammas'], 0)
+                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0)
                 ]
+                
+                # 温度相关方程（仅当计算温度时添加）
+                if calculate_temp:
+                    eqs += [
+                        Eq(sym_vars['Tb'] - sym_vars['Ts'], 0),
+                        Eq(sym_vars['gammab'] - sym_vars['gammas'], 0)
+                    ]
             else:
                 # 样品与基板为不同材料：单独计算
                 eqs += [
@@ -1320,6 +1430,11 @@ def database_mode_page():
                     Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),  # 压力连续性
                     Eq(sym_vars['ub'] - sym_vars['us'], 0)   # 速度连续性
                 ]
+                
+                # 温度相关方程（仅当计算温度时添加）
+                if calculate_temp:
+                    eqs.append(Eq(sym_vars['Ts'] - 300 - (sym_vars['Es'] - sym_vars['E0s'])*1e6 / 
+                                 (Cv_values['s'] * (1 + sym_vars['gammas']/2)), 0))
             
             substituted_eqs = [eq.subs(current_subs) for eq in eqs]
             remaining_vars = list(set().union(*[eq.free_symbols for eq in substituted_eqs]))
@@ -1379,7 +1494,7 @@ def database_mode_page():
             )
             
             st.subheader("结果可视化")
-            fig = plot_results_streamlit(results)
+            fig = plot_results_streamlit(results, calculate_temp)
             if fig:
                 st.pyplot(fig)
                 buf2 = BytesIO()
@@ -1388,7 +1503,7 @@ def database_mode_page():
                 st.download_button(
                     label="下载图表",
                     data=buf2,
-                    file_name="analysis_with_temp_error.png",
+                    file_name="analysis_with_temp_error.png" if calculate_temp else "analysis_results.png",
                     mime="image/png"
                 )
             
@@ -1407,6 +1522,10 @@ def manual_mode_page():
     st.title("手动输入模式")
     st.write("通过手动输入参数进行求解，适用于没有数据库数据的场景")
     
+    # 添加温度计算选项
+    calculate_temp = st.checkbox("进行温度相关计算", value=True, 
+                                 help="勾选则计算冲击温度，需要格吕奈森系数和比热容参数")
+    
     # 查看数据库快捷入口
     if st.button("查看数据库"):
         st.session_state.page = "view_database"
@@ -1421,8 +1540,8 @@ def manual_mode_page():
     with col3:
         sample_material = st.text_input("样品材料名称", value="Copper", help="输入材料名称，例如: Copper, Aluminum")
     
-    # 检测相同材料并提供共享选项 - 修正逻辑：只有材料相同时才显示共享选项
-    st.subheader("材料参数共享设置")
+    # 检测相同材料并提供共享选项 - 仅共享初始密度、体声速、Hugoniot参数、格吕奈森系数
+    st.subheader("材料参数共享设置（仅共享：初始密度、体声速、Hugoniot参数、格吕奈森系数）")
     material_relations = {}
     
     # 飞片与基板是否相同
@@ -1444,51 +1563,37 @@ def manual_mode_page():
         share_flyer_sample = st.checkbox(f"飞片和样品均为{flyer_material}，共享参数", value=True)
     material_relations['flyer_sample'] = share_flyer_sample
     
-    # 公共材料参数
-    col1, col2 = st.columns(2)
-    with col1:
-        # 格吕奈森系数 - 根据共享设置决定是否需要单独设置
-        if material_relations['flyer_base'] and material_relations['base_sample']:
-            gamma = st.number_input("格吕奈森系数 Γ (所有材料共享)", value=2.0, min_value=0.1, help="铜约为2.0，铝约为2.13")
-            gamma_flyer = gamma_base = gamma_sample = gamma
-        elif material_relations['flyer_base']:
-            gamma_flyer_base = st.number_input(f"格吕奈森系数 Γ (飞片和基板共享, {flyer_material})", value=2.0, min_value=0.1)
-            gamma_sample = st.number_input(f"格吕奈森系数 Γ (样品, {sample_material})", value=2.0, min_value=0.1)
-            gamma_flyer = gamma_base = gamma_flyer_base
-        elif material_relations['base_sample']:
-            gamma_base_sample = st.number_input(f"格吕奈森系数 Γ (基板和样品共享, {base_material})", value=2.0, min_value=0.1)
-            gamma_flyer = st.number_input(f"格吕奈森系数 Γ (飞片, {flyer_material})", value=2.0, min_value=0.1)
-            gamma_base = gamma_sample = gamma_base_sample
-        elif material_relations['flyer_sample']:
-            gamma_flyer_sample = st.number_input(f"格吕奈森系数 Γ (飞片和样品共享, {flyer_material})", value=2.0, min_value=0.1)
-            gamma_base = st.number_input(f"格吕奈森系数 Γ (基板, {base_material})", value=2.0, min_value=0.1)
-            gamma_flyer = gamma_sample = gamma_flyer_sample
-        else:
-            gamma_flyer = st.number_input(f"格吕奈森系数 Γ (飞片, {flyer_material})", value=2.0, min_value=0.1)
-            gamma_base = st.number_input(f"格吕奈森系数 Γ (基板, {base_material})", value=2.0, min_value=0.1)
-            gamma_sample = st.number_input(f"格吕奈森系数 Γ (样品, {sample_material})", value=2.0, min_value=0.1)
-    
-    with col2:
-        # 定容比热容 - 根据共享设置决定是否需要单独设置
-        if material_relations['flyer_base'] and material_relations['base_sample']:
-            Cv = st.number_input("定容比热容 Cv (J/(kg·K)) (所有材料共享)", value=385, help="铜约为385，铝约为900")
-            Cv_flyer = Cv_base = Cv_sample = Cv
-        elif material_relations['flyer_base']:
-            Cv_flyer_base = st.number_input(f"定容比热容 Cv (J/(kg·K)) (飞片和基板共享, {flyer_material})", value=385)
-            Cv_sample = st.number_input(f"定容比热容 Cv (J/(kg·K)) (样品, {sample_material})", value=385)
-            Cv_flyer = Cv_base = Cv_flyer_base
-        elif material_relations['base_sample']:
-            Cv_base_sample = st.number_input(f"定容比热容 Cv (J/(kg·K)) (基板和样品共享, {base_material})", value=385)
-            Cv_flyer = st.number_input(f"定容比热容 Cv (J/(kg·K)) (飞片, {flyer_material})", value=385)
-            Cv_base = Cv_sample = Cv_base_sample
-        elif material_relations['flyer_sample']:
-            Cv_flyer_sample = st.number_input(f"定容比热容 Cv (J/(kg·K)) (飞片和样品共享, {flyer_material})", value=385)
-            Cv_base = st.number_input(f"定容比热容 Cv (J/(kg·K)) (基板, {base_material})", value=385)
-            Cv_flyer = Cv_sample = Cv_flyer_sample
-        else:
-            Cv_flyer = st.number_input(f"定容比热容 Cv (J/(kg·K)) (飞片, {flyer_material})", value=385)
-            Cv_base = st.number_input(f"定容比热容 Cv (J/(kg·K)) (基板, {base_material})", value=385)
-            Cv_sample = st.number_input(f"定容比热容 Cv (J/(kg·K)) (样品, {sample_material})", value=385)
+    # 比热容设置（仅当计算温度时显示）
+    Cv_values = {}
+    if calculate_temp:
+        st.subheader("比热容设置（用于温度计算）")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            Cv_values['f'] = st.number_input(f"飞片比热容 Cv (J/(kg·K)) ({flyer_material})", 
+                                            value=385.0, min_value=1.0, help="铜约为385，铝约为900")
+        with col2:
+            if material_relations['flyer_base']:
+                Cv_values['b'] = Cv_values['f']
+                st.number_input(f"基板比热容 Cv (J/(kg·K)) ({base_material})", 
+                               value=Cv_values['b'], min_value=1.0, disabled=True)
+                st.info("与飞片共享比热容参数")
+            else:
+                Cv_values['b'] = st.number_input(f"基板比热容 Cv (J/(kg·K)) ({base_material})", 
+                                                value=385.0, min_value=1.0)
+        with col3:
+            if material_relations['base_sample']:
+                Cv_values['s'] = Cv_values['b']
+                st.number_input(f"样品比热容 Cv (J/(kg·K)) ({sample_material})", 
+                               value=Cv_values['s'], min_value=1.0, disabled=True)
+                st.info("与基板共享比热容参数")
+            elif material_relations['flyer_sample']:
+                Cv_values['s'] = Cv_values['f']
+                st.number_input(f"样品比热容 Cv (J/(kg·K)) ({sample_material})", 
+                               value=Cv_values['s'], min_value=1.0, disabled=True)
+                st.info("与飞片共享比热容参数")
+            else:
+                Cv_values['s'] = st.number_input(f"样品比热容 Cv (J/(kg·K)) ({sample_material})", 
+                                                value=385.0, min_value=1.0)
     
     exp_method = st.text_input("实验方法/数据来源", value="manual_input", help="记录数据来源，例如: iml, ssp, 实验设备, 文献等")
     
@@ -1502,12 +1607,43 @@ def manual_mode_page():
     input_params = {}
     sym_vars = {}
     
+    # 确定哪些参数需要禁用（仅共享指定参数）
+    disabled_base_vars = {}
+    if material_relations['flyer_base']:
+        disabled_base_vars = {
+            "rh0b": True, "C0b": True, "Sb": True, "gammab": True,
+            "rhb": False, "Db": False, "E0b": False, "Eb": False, 
+            "ub": False, "Pb": False, "Tb": not calculate_temp
+        }
+    else:
+        disabled_base_vars = {var: False for var in variables["b"]}
+    
+    disabled_sample_vars = {}
+    if material_relations['base_sample']:
+        disabled_sample_vars = {
+            "rh0s": True, "C0s": True, "Ss": True, "gammas": True,
+            "rhs": False, "Ds": False, "E0s": False, "Es": False, 
+            "us": False, "Ps": False, "Ts": not calculate_temp
+        }
+    elif material_relations['flyer_sample']:
+        disabled_sample_vars = {
+            "rh0s": True, "C0s": True, "Ss": True, "gammas": True,
+            "rhs": False, "Ds": False, "E0s": False, "Es": False, 
+            "us": False, "Ps": False, "Ts": not calculate_temp
+        }
+    else:
+        disabled_sample_vars = {var: False for var in variables["s"]}
+    
     # 飞片参数
     with st.expander(f"{flyer_material} 飞片参数", expanded=True):
         cols = st.columns(3)
         for i, var in enumerate(variables["f"]):
+            # 温度参数仅在计算温度时显示
+            if var.startswith('T') and not calculate_temp:
+                continue
+                
             with cols[i % 3]:
-                default_val = gamma_flyer if var == "gammaf" else None
+                default_val = 2.0 if var == "gammaf" else None
                 val = get_input_streamlit(
                     label=var,
                     var_name=var,
@@ -1534,29 +1670,30 @@ def manual_mode_page():
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
     
-    # 基板参数输入 - 根据共享设置决定是否禁用
-    disabled_base = material_relations['flyer_base']
-    with st.expander(f"{base_material} 基板参数 {'(与飞片共享)' if disabled_base else ''}", expanded=not disabled_base):
-        if disabled_base:
-            st.info(f"基板与飞片均为{flyer_material}，将使用飞片参数值")
+    # 基板参数输入 - 根据共享设置决定是否禁用（仅共享指定参数）
+    with st.expander(f"{base_material} 基板参数 {'(与飞片共享部分参数)' if material_relations['flyer_base'] else ''}", expanded=not material_relations['flyer_base']):
+        if material_relations['flyer_base']:
+            st.info(f"基板与飞片材料相同，共享初始密度、体声速、Hugoniot参数和格吕奈森系数")
         
         cols = st.columns(3)
         for i, var in enumerate(variables["b"]):
+            # 温度参数仅在计算温度时显示
+            if var.startswith('T') and not calculate_temp:
+                continue
+                
             with cols[i % 3]:
                 default_val = None
                 # 如果共享参数，使用飞片的参数作为默认值
-                if disabled_base:
+                if material_relations['flyer_base'] and var in ["rh0b", "C0b", "Sb", "gammab"]:
                     flyer_var_map = {
-                        "rh0b": "rh0f", "rhb": "rhf", "Db": "Df", 
-                        "C0b": "C0f", "Sb": "Sf", "E0b": "E0f", 
-                        "Eb": "Ef", "ub": "uf", "Pb": "Pf", 
-                        "gammab": "gammaf", "Tb": "Tf"
+                        "rh0b": "rh0f", "C0b": "C0f", 
+                        "Sb": "Sf", "gammab": "gammaf"
                     }
                     flyer_equivalent = flyer_var_map.get(var)
                     if flyer_equivalent and flyer_equivalent in input_params:
                         default_val = input_params[flyer_equivalent]
-                else:
-                    default_val = gamma_base if var == "gammab" else None
+                elif var == "gammab" and not material_relations['flyer_base']:
+                    default_val = 2.0  # 默认格吕奈森系数
                 
                 val = get_input_streamlit(
                     label=var,
@@ -1579,43 +1716,39 @@ def manual_mode_page():
                          "基板冲击压力" if var == "Pb" else
                          "基板格吕奈森系数" if var == "gammab" else
                          "基板冲击温度",
-                    disabled=disabled_base
+                    disabled=disabled_base_vars.get(var, False)
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
     
-    # 样品参数输入 - 根据共享设置决定是否禁用
-    disabled_sample = material_relations['base_sample'] or material_relations['flyer_sample']
-    share_source = "基板" if material_relations['base_sample'] else "飞片"
+    # 样品参数输入 - 根据共享设置决定是否禁用（仅共享指定参数）
+    share_source = "基板" if material_relations['base_sample'] else "飞片" if material_relations['flyer_sample'] else ""
     
-    with st.expander(f"{sample_material} 样品参数 {'(与' + share_source + '共享)' if disabled_sample else ''}", expanded=not disabled_sample):
-        if disabled_sample:
-            st.info(f"样品与{share_source}均为{sample_material}，将使用{share_source}参数值")
+    with st.expander(f"{sample_material} 样品参数 {'(与' + share_source + '共享部分参数)' if share_source else ''}", expanded=not (material_relations['base_sample'] or material_relations['flyer_sample'])):
+        if share_source:
+            st.info(f"样品与{share_source}材料相同，共享初始密度、体声速、Hugoniot参数和格吕奈森系数")
         
         cols = st.columns(3)
         for i, var in enumerate(variables["s"]):
+            # 温度参数仅在计算温度时显示
+            if var.startswith('T') and not calculate_temp:
+                continue
+                
             with cols[i % 3]:
                 default_val = None
                 # 如果共享参数，使用相应来源的参数作为默认值
-                if disabled_sample:
+                if share_source:
                     source_var_map = {
                         "rh0s": "rh0b" if material_relations['base_sample'] else "rh0f",
-                        "rhs": "rhb" if material_relations['base_sample'] else "rhf",
-                        "Ds": "Db" if material_relations['base_sample'] else "Df",
                         "C0s": "C0b" if material_relations['base_sample'] else "C0f",
                         "Ss": "Sb" if material_relations['base_sample'] else "Sf",
-                        "E0s": "E0b" if material_relations['base_sample'] else "E0f",
-                        "Es": "Eb" if material_relations['base_sample'] else "Ef",
-                        "us": "ub" if material_relations['base_sample'] else "uf",
-                        "Ps": "Pb" if material_relations['base_sample'] else "Pf",
-                        "gammas": "gammab" if material_relations['base_sample'] else "gammaf",
-                        "Ts": "Tb" if material_relations['base_sample'] else "Tf"
+                        "gammas": "gammab" if material_relations['base_sample'] else "gammaf"
                     }
                     source_equivalent = source_var_map.get(var)
                     if source_equivalent and source_equivalent in input_params:
                         default_val = input_params[source_equivalent]
-                else:
-                    default_val = gamma_sample if var == "gammas" else None
+                elif var == "gammas":
+                    default_val = 2.0  # 默认格吕奈森系数
                 
                 val = get_input_streamlit(
                     label=var,
@@ -1638,7 +1771,7 @@ def manual_mode_page():
                          "样品冲击压力" if var == "Ps" else
                          "样品格吕奈森系数" if var == "gammas" else
                          "样品冲击温度",
-                    disabled=disabled_sample
+                    disabled=disabled_sample_vars.get(var, False)
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
@@ -1720,6 +1853,15 @@ def manual_mode_page():
                 Eq(sym_vars['uf'] - sym_vars['ub'], 0)
             ]
             
+            # 温度相关方程（仅当计算温度时添加）
+            if calculate_temp:
+                # 飞片温度方程 (Mie-Grüneisen)
+                eqs.append(Eq(sym_vars['Tf'] - 300 - (sym_vars['Ef'] - sym_vars['E0f'])*1e6 / 
+                             (Cv_values['f'] * (1 + sym_vars['gammaf']/2)), 0))
+                # 基板温度方程
+                eqs.append(Eq(sym_vars['Tb'] - 300 - (sym_vars['Eb'] - sym_vars['E0b'])*1e6 / 
+                             (Cv_values['b'] * (1 + sym_vars['gammab']/2)), 0))
+            
             try:
                 # 检查样品和基板是否为同一材料
                 cond = all([
@@ -1737,10 +1879,15 @@ def manual_mode_page():
                     Eq(sym_vars['ub'] - sym_vars['us'], 0),
                     Eq(sym_vars['rhb'] - sym_vars['rhs'], 0),
                     Eq(sym_vars['Db'] - sym_vars['Ds'], 0),
-                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0),
-                    Eq(sym_vars['Tb'] - sym_vars['Ts'], 0),
-                    Eq(sym_vars['gammab'] - sym_vars['gammas'], 0)
+                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0)
                 ]
+                
+                # 温度相关方程（仅当计算温度时添加）
+                if calculate_temp:
+                    eqs += [
+                        Eq(sym_vars['Tb'] - sym_vars['Ts'], 0),
+                        Eq(sym_vars['gammab'] - sym_vars['gammas'], 0)
+                    ]
             else:
                 eqs += [
                     # 样品质量守恒
@@ -1758,6 +1905,11 @@ def manual_mode_page():
                     Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),  # 压力连续性
                     Eq(sym_vars['ub'] - sym_vars['us'], 0)   # 速度连续性
                 ]
+                
+                # 温度相关方程（仅当计算温度时添加）
+                if calculate_temp:
+                    eqs.append(Eq(sym_vars['Ts'] - 300 - (sym_vars['Es'] - sym_vars['E0s'])*1e6 / 
+                                 (Cv_values['s'] * (1 + sym_vars['gammas']/2)), 0))
             
             substituted_eqs = [eq.subs(current_subs) for eq in eqs]
             remaining_vars = list(set().union(*[eq.free_symbols for eq in substituted_eqs]))
@@ -1813,7 +1965,7 @@ def manual_mode_page():
             )
             
             st.subheader("结果可视化")
-            fig = plot_results_streamlit(results)
+            fig = plot_results_streamlit(results, calculate_temp)
             if fig:
                 st.pyplot(fig)
                 buf2 = BytesIO()
@@ -1822,7 +1974,7 @@ def manual_mode_page():
                 st.download_button(
                     label="下载图表",
                     data=buf2,
-                    file_name="analysis_with_temp_error.png",
+                    file_name="analysis_with_temp_error.png" if calculate_temp else "analysis_results.png",
                     mime="image/png"
                 )
             
@@ -1838,50 +1990,19 @@ def manual_mode_page():
         st.rerun()  # 立即刷新页面
 
 def main():
-    if 'page' not in st.session_state:
-        st.session_state.page = "home"
-    
-    # 初始化会话状态变量，包括记录上一页的变量
-    if 'previous_page' not in st.session_state:
-        st.session_state.previous_page = "home"
-    if 'confirm_delete' not in st.session_state:
-        st.session_state['confirm_delete'] = False
-    if 'confirm_clear' not in st.session_state:
-        st.session_state['confirm_clear'] = False
-    if 'calculation_result' not in st.session_state:
-        st.session_state.calculation_result = None
-    
-    st.set_page_config(
-        page_title="冲击波参数计算与分析系统",
-        page_icon="✨",
-        layout="wide"
-    )
-    
-    # 数据库查看页面
-    if st.session_state.page == "view_database":
-        st.title("数据库查看与管理")
-        view_database()
-        
-        # 添加返回上一页按钮
-        col_back, col_home = st.columns(2)
-        with col_back:
-            if st.button("返回上一页"):
-                # 返回到之前的页面，如果没有记录则返回首页
-                prev_page = st.session_state.get('previous_page', 'home')
-                st.session_state.page = prev_page
-                st.rerun()
-        with col_home:
-            if st.button("返回首页"):
-                st.session_state.page = "home"
-                st.rerun()
-        return
-    
+        # 页面导航逻辑
     if st.session_state.page == "home":
         home_page()
     elif st.session_state.page == "database_mode":
         database_mode_page()
     elif st.session_state.page == "manual_mode":
         manual_mode_page()
+    elif st.session_state.page == "view_database":
+        view_database()
+        # 添加返回按钮，返回到之前的页面
+        if st.button("返回"):
+            st.session_state.page = st.session_state.previous_page
+            st.rerun()
 
 if __name__ == "__main__":
     main()
