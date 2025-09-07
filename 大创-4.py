@@ -542,7 +542,7 @@ def calculate_error(params, param_errors):
         "Up_err": Up_err
     }
 
-# 输入函数
+# 输入函数 - 修复参数共享问题
 def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", disabled=False):
     st.caption(f"{desc} | 单位: {unit}")
     input_type = st.radio(
@@ -1179,7 +1179,12 @@ def database_mode_page():
                     }
                     flyer_equivalent = flyer_var_map.get(var)
                     if flyer_equivalent and flyer_equivalent in input_params:
-                        default_val = input_params[flyer_equivalent]
+                        # 如果飞片参数未输入，保持未输入状态
+                        if isinstance(input_params[flyer_equivalent], list) and len(input_params[flyer_equivalent]) > 0:
+                            default_val = input_params[flyer_equivalent]
+                        else:
+                            default_val = input_params[flyer_equivalent]
+                
                 elif var == "gammab" and not material_relations['flyer_base']:
                     # 尝试从数据中获取平均格吕奈森系数
                     if not base_df.empty and 'gamma' in base_df.columns:
@@ -1261,7 +1266,12 @@ def database_mode_page():
                     }
                     source_equivalent = source_var_map.get(var)
                     if source_equivalent and source_equivalent in input_params:
-                        default_val = input_params[source_equivalent]
+                        # 如果源参数未输入，保持未输入状态
+                        if isinstance(input_params[source_equivalent], list) and len(input_params[source_equivalent]) > 0:
+                            default_val = input_params[source_equivalent]
+                        else:
+                            default_val = input_params[source_equivalent]
+                
                 elif var == "gammas":
                     # 尝试从数据中获取平均格吕奈森系数
                     if not sample_df.empty and 'gamma' in sample_df.columns:
@@ -1691,7 +1701,12 @@ def manual_mode_page():
                     }
                     flyer_equivalent = flyer_var_map.get(var)
                     if flyer_equivalent and flyer_equivalent in input_params:
-                        default_val = input_params[flyer_equivalent]
+                        # 如果飞片参数未输入，保持未输入状态
+                        if isinstance(input_params[flyer_equivalent], list) and len(input_params[flyer_equivalent]) > 0:
+                            default_val = input_params[flyer_equivalent]
+                        else:
+                            default_val = input_params[flyer_equivalent]
+                
                 elif var == "gammab" and not material_relations['flyer_base']:
                     default_val = 2.0  # 默认格吕奈森系数
                 
@@ -1746,7 +1761,12 @@ def manual_mode_page():
                     }
                     source_equivalent = source_var_map.get(var)
                     if source_equivalent and source_equivalent in input_params:
-                        default_val = input_params[source_equivalent]
+                        # 如果源参数未输入，保持未输入状态
+                        if isinstance(input_params[source_equivalent], list) and len(input_params[source_equivalent]) > 0:
+                            default_val = input_params[source_equivalent]
+                        else:
+                            default_val = input_params[source_equivalent]
+                
                 elif var == "gammas":
                     default_val = 2.0  # 默认格吕奈森系数
                 
@@ -1982,15 +2002,17 @@ def manual_mode_page():
                 count = save_results_to_db(results, sample_material)
                 if count > 0:
                     st.success(f"已保存到 {sample_material} 数据集，共 {count} 条记录")
-        else:
-            st.warning("未找到有效解（请检查参数是否符合物理规律，如：冲击波速度>粒子速度）")
-    
     if st.button("返回首页"):
         st.session_state.page = "home"
         st.rerun()  # 立即刷新页面
 
+# 主程序入口
 def main():
-        # 页面导航逻辑
+    # 初始化页面状态
+    if 'page' not in st.session_state:
+        st.session_state.page = "home"
+    
+    # 显示不同页面
     if st.session_state.page == "home":
         home_page()
     elif st.session_state.page == "database_mode":
@@ -1999,10 +2021,15 @@ def main():
         manual_mode_page()
     elif st.session_state.page == "view_database":
         view_database()
-        # 添加返回按钮，返回到之前的页面
-        if st.button("返回"):
-            st.session_state.page = st.session_state.previous_page
-            st.rerun()
+        # 添加返回按钮
+        col_back, _ = st.columns([1, 5])
+        with col_back:
+            if st.button("返回"):
+                if 'previous_page' in st.session_state:
+                    st.session_state.page = st.session_state.previous_page
+                else:
+                    st.session_state.page = "home"
+                st.rerun()
 
 if __name__ == "__main__":
     main()
