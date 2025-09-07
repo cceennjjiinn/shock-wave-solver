@@ -166,19 +166,31 @@ def save_input_parameters(input_params, material_name="Copper", exp_method="manu
 def save_input_data_to_db(input_data, material_name, exp_method="manual_input"):
     """保存计算结果到数据库，返回保存的记录数"""
     try:
+        # 验证输入数据的有效性
+        required_fields = ['rho0', 'Us', 'Up', 'P']
+        for field in required_fields:
+            if field not in input_data or input_data[field] is None:
+                st.error(f"保存失败：缺少必要的参数 {field}")
+                return 0
+                
+            # 确保数值有效
+            if not isinstance(input_data[field], (int, float)) or input_data[field] <= 0:
+                st.error(f"保存失败：参数 {field} 必须是正数")
+                return 0
+
         with sqlite_engine.begin() as conn:
             data = {
                 'material': material_name,
-                'rho0': input_data.get('rho0', 0),
-                'Us': input_data.get('Us', 0),
-                'Up': input_data.get('Up', 0),
-                'P': input_data.get('P', 0),
-                'V': input_data.get('V', 0),
-                'rho': input_data.get('rho', 0),
-                'V_V0': input_data.get('V_V0', 0),
+                'rho0': float(input_data['rho0']),
+                'Us': float(input_data['Us']),
+                'Up': float(input_data['Up']),
+                'P': float(input_data['P']),
+                'V': float(input_data.get('V', 0)),
+                'rho': float(input_data.get('rho', 0)),
+                'V_V0': float(input_data.get('V_V0', 0)),
                 'exp_method': exp_method,
-                'gamma': input_data.get('gamma', 0),
-                'T': input_data.get('T', 0)
+                'gamma': float(input_data.get('gamma', 0)),
+                'T': float(input_data.get('T', 0))
             }
             stmt = text("""
                 INSERT INTO shock_wave_all_data 
