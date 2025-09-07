@@ -232,7 +232,7 @@ def bulk_import_data(df, material_name, exp_method="bulk_import"):
     missing_cols = [col for col in required_columns if col not in df.columns]
     
     if missing_cols:
-        st.error(f"导入失败：CSV文件缺少必要的列: {', '.join(missing_cols)}")
+        st.error(f"导入失败：文件缺少必要的列: {', '.join(missing_cols)}")
         return 0
         
     try:
@@ -311,19 +311,28 @@ def view_database():
         with col1:
             st.subheader("批量导入数据")
             new_material = st.text_input("材料名称 (Material Name)", help="输入要导入数据的材料名称，使用英文")
-            uploaded_file = st.file_uploader("选择CSV文件", type="csv")
+            # 支持Excel和CSV文件上传
+            uploaded_file = st.file_uploader("选择Excel或CSV文件", type=["csv", "xlsx", "xls"])
             exp_method = st.text_input("实验方法/数据来源", value="bulk_import")
             
             if st.button("导入数据"):
                 if not new_material:
                     st.error("请输入材料名称")
                 elif uploaded_file is None:
-                    st.error("请选择CSV文件")
+                    st.error("请选择文件")
                 else:
-                    # 读取CSV文件
+                    # 读取文件，根据文件类型自动处理
                     try:
-                        df = pd.read_csv(uploaded_file)
-                        st.success(f"成功读取CSV文件，包含 {len(df)} 条记录")
+                        file_extension = uploaded_file.name.split('.')[-1].lower()
+                        if file_extension in ['xlsx', 'xls']:
+                            # 读取Excel文件
+                            df = pd.read_excel(uploaded_file)
+                            st.success(f"成功读取Excel文件，包含 {len(df)} 条记录")
+                        else:
+                            # 读取CSV文件
+                            df = pd.read_csv(uploaded_file)
+                            st.success(f"成功读取CSV文件，包含 {len(df)} 条记录")
+                            
                         st.dataframe(df.head())  # 显示前几行预览
                         
                         # 导入数据
@@ -334,7 +343,7 @@ def view_database():
                         else:
                             st.warning("没有导入任何记录，请检查数据格式")
                     except Exception as e:
-                        st.error(f"读取CSV文件失败: {str(e)}")
+                        st.error(f"读取文件失败: {str(e)}")
         
         # 批量删除部分
         with col2:
@@ -916,6 +925,12 @@ def home_page():
         if st.button("手动输入参数"):
             st.session_state.page = "manual_mode"
             st.rerun()  # 立即刷新页面
+    
+    # 底部返回按钮
+    st.markdown("---")
+    if st.button("返回上一页"):
+        # 如果在首页，返回按钮不执行任何操作或给出提示
+        st.info("当前已是首页")
 
 def database_mode_page():
     st.title("数据库模式")
@@ -1393,7 +1408,9 @@ def database_mode_page():
                 if count > 0:
                     st.success(f"已保存到 {sample_material} 数据集，共 {count} 条记录")
     
-    if st.button("返回首页"):
+    # 底部返回按钮
+    st.markdown("---")
+    if st.button("返回上一页"):
         st.session_state.page = "home"
         st.rerun()  # 立即刷新页面
 
@@ -1582,7 +1599,7 @@ def manual_mode_page():
     disabled_sample = material_relations['base_sample'] or material_relations['flyer_sample']
     share_source = "基板" if material_relations['base_sample'] else "飞片"
     
-    with expander(f"{sample_material} 样品参数 {'(与' + share_source + '共享)' if disabled_sample else ''}", expanded=not disabled_sample):
+    with st.expander(f"{sample_material} 样品参数 {'(与' + share_source + '共享)' if disabled_sample else ''}", expanded=not disabled_sample):
         if disabled_sample:
             st.info(f"样品与{share_source}均为{sample_material}，将使用{share_source}参数值")
         
@@ -1827,7 +1844,9 @@ def manual_mode_page():
         else:
             st.warning("未找到有效解（请检查参数是否符合物理规律，如：冲击波速度>粒子速度）")
     
-    if st.button("返回首页"):
+    # 底部返回按钮
+    st.markdown("---")
+    if st.button("返回上一页"):
         st.session_state.page = "home"
         st.rerun()  # 立即刷新页面
 
@@ -1853,7 +1872,9 @@ def main():
     if st.session_state.page == "view_database":
         st.title("数据库查看与管理")
         view_database()
-        if st.button("返回首页"):
+        # 底部返回按钮
+        st.markdown("---")
+        if st.button("返回上一页"):
             st.session_state.page = "home"
             st.rerun()
         return
