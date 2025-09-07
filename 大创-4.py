@@ -706,7 +706,7 @@ def generate_shock_plots(df, C0, S, material_name, material_type):
     default_color = 'gray'  # 未定义的实验方法用灰色
     
     # 标题使用英文
-    fig.suptitle(f'{material_type} Material: {material_name} - Shock Wave Relationships', fontsize=16)
+    fig.suptitle(f'Material: {material_name} - Shock Wave Relationships', fontsize=16)
     
     # 获取所有唯一的实验方法
     if 'exp_method' in df.columns:
