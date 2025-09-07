@@ -62,7 +62,26 @@ def init_database():
     except Exception as e:
         st.error(f"数据库初始化失败: {str(e)}")
 
+# 修复数据库表结构 - 确保gamma字段存在
+def fix_database_schema():
+    """修复数据库表结构，添加缺失的gamma字段"""
+    try:
+        with sqlite_engine.connect() as conn:
+            # 检查是否存在gamma字段
+            cursor = conn.connection.cursor()
+            cursor.execute("PRAGMA table_info(shock_wave_all_data)")
+            columns = [row[1] for row in cursor.fetchall()]
+            
+            if 'gamma' not in columns:
+                conn.execute(text("ALTER TABLE shock_wave_all_data ADD COLUMN gamma REAL"))
+                conn.commit()
+                st.success("数据库表结构已修复，添加了gamma字段")
+    except Exception as e:
+        st.error(f"修复数据库表结构失败: {str(e)}")
+
+# 先初始化数据库，再修复可能的表结构问题
 init_database()
+fix_database_schema()
 
 # 数据库操作函数 - 优化查询效率
 @st.cache_data(ttl=3600)  # 缓存1小时
