@@ -279,7 +279,7 @@ def view_database():
         # 批量导入部分
         with col1:
             st.subheader("批量导入数据")
-            new_material = st.text_input("材料名称", help="输入要导入数据的材料名称")
+            new_material = st.text_input("材料名称 (Material Name)", help="输入要导入数据的材料名称，使用英文")
             uploaded_file = st.file_uploader("选择CSV文件", type="csv")
             exp_method = st.text_input("实验方法/数据来源", value="bulk_import")
             
@@ -299,8 +299,7 @@ def view_database():
                         count = bulk_import_data(df, new_material, exp_method)
                         if count > 0:
                             st.success(f"成功导入 {count} 条记录（跳过包含空值的行）")
-                            # 刷新数据
-                            st.rerun()  # 修改：使用st.rerun()替代st.experimental_rerun()
+                            st.rerun()
                         else:
                             st.warning("没有导入任何记录，请检查数据格式")
                     except Exception as e:
@@ -328,7 +327,6 @@ def view_database():
                         },
                         disabled=df.columns.difference(["选择"]),
                         hide_index=True,
-                        # 移除：selection_mode参数在新版本中已不支持
                     )
                     
                     # 获取选中的记录ID
@@ -343,13 +341,13 @@ def view_database():
                                     if deleted > 0:
                                         st.success(f"成功删除 {deleted} 条记录")
                                         st.session_state['confirm_delete'] = False
-                                        st.rerun()  # 修改：使用st.rerun()替代st.experimental_rerun()
+                                        st.rerun()
                                     else:
                                         st.warning("删除失败或没有记录被删除")
                                 else:
                                     st.warning("请确认删除操作")
                                     st.session_state['confirm_delete'] = True
-                                    st.rerun()  # 修改：使用st.rerun()替代st.experimental_rerun()
+                                    st.rerun()
                             else:
                                 st.warning("请先选择要删除的记录")
                     
@@ -360,13 +358,13 @@ def view_database():
                                 if deleted > 0:
                                     st.success(f"成功清空 {del_material} 的所有 {deleted} 条记录")
                                     st.session_state['confirm_clear'] = False
-                                    st.rerun()  # 修改：使用st.rerun()替代st.experimental_rerun()
+                                    st.rerun()
                                 else:
                                     st.warning("清空失败或该材料没有数据")
                             else:
                                 st.warning("此操作将删除该材料所有数据，请确认")
                                 st.session_state['confirm_clear'] = True
-                                st.rerun()  # 修改：使用st.rerun()替代st.experimental_rerun()
+                                st.rerun()
                 else:
                     st.info(f"材料 {del_material} 暂无数据可删除")
             else:
@@ -453,13 +451,13 @@ def fit_hugoniot(df):
 @st.cache_data(ttl=3600)  # 缓存拟合结果
 def fit_material_data(df, material_name, material_type):
     if df is None or df.empty:
-        st.warning(f"{material_type}材料'{material_name}'没有数据")
+        st.warning(f"{material_type} material '{material_name}' has no data")
         return None
     
     # 过滤异常值
     df = df[(df['Us'] > df['Up']) & (df['Us'] > 0) & (df['Up'] >= 0)]
     if len(df) < 2:
-        st.warning(f"{material_type}材料'{material_name}'有效数据不足，无法拟合")
+        st.warning(f"{material_type} material '{material_name}' has insufficient valid data for fitting")
         return None
     
     X = df['Up'].values.reshape(-1, 1)
@@ -478,14 +476,14 @@ def fit_material_data(df, material_name, material_type):
     rmse = np.sqrt(mean_squared_error(y, y_pred))  # 均方根误差
     mae = np.mean(np.abs(y - y_pred))              # 平均绝对误差
     
-    st.info(f"{material_type}材料 {material_name} 拟合结果: Us = {C0:.4f} + {S:.4f}*Up")
-    st.info(f"拟合误差: R² = {r2:.4f}, RMSE = {rmse:.4f} km/s, MAE = {mae:.4f} km/s")
-    st.info(f"平均参数: ρ₀ = {df['rho0'].mean():.4f} g/cm³, 平均压力 = {df['P'].mean():.4f} GPa")
+    st.info(f"{material_type} material {material_name} fitting result: Us = {C0:.4f} + {S:.4f}*Up")
+    st.info(f"Fitting error: R² = {r2:.4f}, RMSE = {rmse:.4f} km/s, MAE = {mae:.4f} km/s")
+    st.info(f"Average parameters: ρ₀ = {df['rho0'].mean():.4f} g/cm³, Average pressure = {df['P'].mean():.4f} GPa")
     
     # 按实验方法统计数据
     if 'exp_method' in df.columns:
         method_counts = df['exp_method'].value_counts()
-        st.info(f"实验方法分布: {', '.join([f'{k}: {v}条' for k, v in method_counts.items()])}")
+        st.info(f"Experimental method distribution: {', '.join([f'{k}: {v} entries' for k, v in method_counts.items()])}")
     
     return {
         "C0": C0, "S": S, "rho0": df['rho0'].mean(),
@@ -513,34 +511,34 @@ def calculate_error(params, param_errors):
 
 # 输入函数
 def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", disabled=False):
-    st.caption(f"{desc} | 单位: {unit}")
+    st.caption(f"{desc} | Unit: {unit}")
     input_type = st.radio(
-        f"{label}输入类型",
-        ["单一值", "多个值（逗号分隔）", "范围（可指定步长）"],
+        f"{label} input type",
+        ["Single value", "Multiple values (comma separated)", "Range (with step)"],
         key=f"{key}_type",
         horizontal=True,
         disabled=disabled,
-        help="选择输入数据的方式：单一数值、多个离散值或连续范围值"
+        help="Select input method: single value, multiple discrete values, or continuous range"
     )
     
     default_val = str(default) if default is not None else ""
     
-    if input_type == "单一值":
+    if input_type == "Single value":
         val = st.text_input(label, default_val, key=f"{key}_single", disabled=disabled)
         if val == "":
             return symbols(var_name)
         try:
             return [float(val)]
         except ValueError:
-            st.error("请输入有效的数字（例如：3.14）")
+            st.error("Please enter a valid number (e.g.: 3.14)")
             return None
-    elif input_type == "多个值（逗号分隔）":
+    elif input_type == "Multiple values (comma separated)":
         val = st.text_input(
             label, 
             default_val, 
             key=f"{key}_multi", 
             disabled=disabled,
-            help="输入多个数值，用逗号分隔（示例：1.5, 3.0, 4.5）"
+            help="Enter multiple values separated by commas (example: 1.5, 3.0, 4.5)"
         )
         if val == "":
             return symbols(var_name)
@@ -548,38 +546,38 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", di
             # 处理可能的空格并分割
             values = [float(x.strip()) for x in val.split(',') if x.strip()]
             if not values:
-                st.error("请至少输入一个数值")
+                st.error("Please enter at least one value")
                 return None
             return values
         except ValueError:
-            st.error("请输入有效的逗号分隔数字（例如：1.0, 2.5, 3.8）")
+            st.error("Please enter valid comma-separated numbers (e.g.: 1.0, 2.5, 3.8)")
             return None
     else:
-        st.caption("范围示例：起始值=1.0，结束值=5.0，步长=1.0 → 生成 [1.0, 2.0, 3.0, 4.0, 5.0]")
+        st.caption("Range example: start=1.0, end=5.0, step=1.0 → generates [1.0, 2.0, 3.0, 4.0, 5.0]")
         col1, col2, col3 = st.columns(3)
         with col1:
             start = st.text_input(
-                f"{label}起始值", 
+                f"{label} start value", 
                 default_val, 
                 key=f"{key}_start", 
                 disabled=disabled,
-                help="范围的第一个数值（例如：2.0）"
+                help="First value in the range (e.g.: 2.0)"
             )
         with col2:
             end = st.text_input(
-                f"{label}结束值", 
+                f"{label} end value", 
                 "", 
                 key=f"{key}_end", 
                 disabled=disabled,
-                help="范围的最后一个数值（需大于起始值，例如：10.0）"
+                help="Last value in the range (must be greater than start, e.g.: 10.0)"
             )
         with col3:
             step = st.text_input(
-                f"{label}步长（可选）", 
+                f"{label} step (optional)", 
                 "0.5", 
                 key=f"{key}_step", 
                 disabled=disabled,
-                help="每次递增的数值（例如：0.5 或 2.0，默认0.5）"
+                help="Increment value (e.g.: 0.5 or 2.0, default 0.5)"
             )
             
         if not start or not end:
@@ -593,12 +591,12 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", di
             # 验证和修正输入
             if step <= 0:
                 step = 0.5
-                st.warning("步长必须为正数，已自动设置为0.5")
+                st.warning("Step must be positive, automatically set to 0.5")
             if start > end:
                 start, end = end, start
-                st.warning("起始值大于结束值，已自动交换为从小到大的范围")
+                st.warning("Start value greater than end value, automatically swapped to ascending order")
             if (end - start) < step:
-                st.warning("步长大于范围差值，将只返回起始值")
+                st.warning("Step larger than range difference, will return only start value")
                 return [start]
                 
             # 生成范围值
@@ -610,7 +608,7 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", di
                 current += step
             return values
         except ValueError:
-            st.error("请输入有效的范围数字（例如：起始值1.0，结束值5.0，步长1.0）")
+            st.error("Please enter valid range numbers (e.g.: start=1.0, end=5.0, step=1.0)")
             return None
     
 
@@ -659,7 +657,7 @@ def solve_numerically(eqs, sym_vars, initial_guess):
 
 # 冲击波关系图绘制 - 根据实验方法区分颜色
 @st.cache_data(ttl=3600)  # 缓存图像结果
-def generate_shock_plots(df, C0, S, material_name, material_type, use_english=False):
+def generate_shock_plots(df, C0, S, material_name, material_type, use_english=True):
     # 数据量大时进行采样
     if len(df) > 1000:
         df = df.sample(1000)
@@ -676,16 +674,13 @@ def generate_shock_plots(df, C0, S, material_name, material_type, use_english=Fa
     }
     default_color = 'gray'  # 未定义的实验方法用灰色
     
-    # 根据use_english参数决定使用中文还是英文标题
-    if use_english:
-        material_type_en = {
-            "飞片": "Flyer",
-            "基板": "Substrate",
-            "样品": "Sample"
-        }.get(material_type, material_type)
-        fig.suptitle(f'{material_type_en} Material: {material_name} - Shock Wave Relationships', fontsize=16)
-    else:
-        fig.suptitle(f'{material_type}材料: {material_name} - 冲击波关系图', fontsize=16)
+    # 标题使用英文
+    material_type_en = {
+        "飞片": "Flyer",
+        "基板": "Substrate",
+        "样品": "Sample"
+    }.get(material_type, material_type)
+    fig.suptitle(f'{material_type_en} Material: {material_name} - Shock Wave Relationships', fontsize=16)
     
     # 获取所有唯一的实验方法
     if 'exp_method' in df.columns:
@@ -700,22 +695,16 @@ def generate_shock_plots(df, C0, S, material_name, material_type, use_english=Fa
         color = method_colors.get(method.lower(), default_color)
         axs[0, 0].scatter(
             method_df['Up'], method_df['Us'], 
-            label=f'{method}' if not use_english else f'{method}',
+            label=f'{method}',
             color=color, alpha=0.7
         )
     
     u_p_range = np.linspace(0, df['Up'].max()*1.1, 100)
     U_s_fit = C0 + S * u_p_range
     
-    if use_english:
-        axs[0, 0].plot(u_p_range, U_s_fit, 'r-', label=f'Fit: Us = {C0:.2f} + {S:.2f}·Up')
-        axs[0, 0].set_xlabel('Particle velocity Up (km/s)')
-        axs[0, 0].set_ylabel('Shock wave velocity Us (km/s)')
-    else:
-        axs[0, 0].plot(u_p_range, U_s_fit, 'r-', label=f'拟合: Us = {C0:.2f} + {S:.2f}·Up')
-        axs[0, 0].set_xlabel('粒子速度 Up (km/s)')
-        axs[0, 0].set_ylabel('冲击波速度 Us (km/s)')
-        
+    axs[0, 0].plot(u_p_range, U_s_fit, 'r-', label=f'Fit: Us = {C0:.2f} + {S:.2f}·Up')
+    axs[0, 0].set_xlabel('Particle velocity Up (km/s)')
+    axs[0, 0].set_ylabel('Shock wave velocity Us (km/s)')
     axs[0, 0].legend()
     axs[0, 0].grid(True)
     
@@ -733,15 +722,9 @@ def generate_shock_plots(df, C0, S, material_name, material_type, use_english=Fa
     rho0 = df['rho0'].mean() if not df.empty else 8.96
     P_range = rho0 * U_s_fit * u_p_range  # P = rho0 * Us * Up
     
-    if use_english:
-        axs[0, 1].plot(u_p_range, P_range, 'r-', label='Theoretical curve: P = ρ0·Us·Up')
-        axs[0, 1].set_xlabel('Particle velocity Up (km/s)')
-        axs[0, 1].set_ylabel('Pressure P (GPa)')
-    else:
-        axs[0, 1].plot(u_p_range, P_range, 'r-', label='理论曲线: P = ρ0·Us·Up')
-        axs[0, 1].set_xlabel('粒子速度 Up (km/s)')
-        axs[0, 1].set_ylabel('压力 P (GPa)')
-        
+    axs[0, 1].plot(u_p_range, P_range, 'r-', label='Theoretical curve: P = ρ0·Us·Up')
+    axs[0, 1].set_xlabel('Particle velocity Up (km/s)')
+    axs[0, 1].set_ylabel('Pressure P (GPa)')
     axs[0, 1].legend()
     axs[0, 1].grid(True)
     
@@ -757,15 +740,9 @@ def generate_shock_plots(df, C0, S, material_name, material_type, use_english=Fa
     
     V_V0_range = 1 - u_p_range / U_s_fit  # V/V0 = 1 - Up/Us
     
-    if use_english:
-        axs[1, 0].plot(V_V0_range, P_range, 'r-', label='Theoretical curve')
-        axs[1, 0].set_xlabel('Specific volume ratio V/V0')
-        axs[1, 0].set_ylabel('Pressure P (GPa)')
-    else:
-        axs[1, 0].plot(V_V0_range, P_range, 'r-', label='理论曲线')
-        axs[1, 0].set_xlabel('比体积比 V/V0')
-        axs[1, 0].set_ylabel('压力 P (GPa)')
-        
+    axs[1, 0].plot(V_V0_range, P_range, 'r-', label='Theoretical curve')
+    axs[1, 0].set_xlabel('Specific volume ratio V/V0')
+    axs[1, 0].set_ylabel('Pressure P (GPa)')
     axs[1, 0].legend()
     axs[1, 0].grid(True)
     
@@ -781,15 +758,9 @@ def generate_shock_plots(df, C0, S, material_name, material_type, use_english=Fa
     
     rho_range = rho0 * U_s_fit / (U_s_fit - u_p_range)  # rho = rho0·Us/(Us-Up)
     
-    if use_english:
-        axs[1, 1].plot(P_range, rho_range, 'r-', label='Theoretical curve')
-        axs[1, 1].set_xlabel('Pressure P (GPa)')
-        axs[1, 1].set_ylabel('Density ρ (g/cm³)')
-    else:
-        axs[1, 1].plot(P_range, rho_range, 'r-', label='理论曲线')
-        axs[1, 1].set_xlabel('压力 P (GPa)')
-        axs[1, 1].set_ylabel('密度 ρ (g/cm³)')
-        
+    axs[1, 1].plot(P_range, rho_range, 'r-', label='Theoretical curve')
+    axs[1, 1].set_xlabel('Pressure P (GPa)')
+    axs[1, 1].set_ylabel('Density ρ (g/cm³)')
     axs[1, 1].legend()
     axs[1, 1].grid(True)
     
@@ -803,26 +774,22 @@ def save_plot_to_bytes(fig):
     return buf
 
 # 材料图像显示辅助函数
-def display_material_plots(df, material_name, material_type, use_english=False):
+def display_material_plots(df, material_name, material_type, use_english=True):
     if not df.empty:
-        with st.expander(f"查看{material_type}材料{material_name}的冲击波图像", expanded=True):
+        with st.expander(f"View {material_type} material {material_name} shock wave images", expanded=True):
             C0, S = fit_hugoniot(df)
-            # 根据参数决定是否使用英文
+            # 使用英文显示
             fig = generate_shock_plots(df, C0, S, material_name, material_type, use_english)
             st.pyplot(fig)
             buf = save_plot_to_bytes(fig)
             
-            if use_english:
-                material_type_en = {
-                    "飞片": "flyer",
-                    "基板": "substrate",
-                    "样品": "sample"
-                }.get(material_type, material_type.lower())
-                download_label = f"Download {material_type_en} {material_name} shock wave plots"
-                file_name = f"{material_type_en}_{material_name}_shock_relations.png"
-            else:
-                download_label = f"下载{material_type.lower()}{material_name}的冲击波图像"
-                file_name = f"{material_type.lower()}_{material_name}_shock_relations.png"
+            material_type_en = {
+                "飞片": "flyer",
+                "基板": "substrate",
+                "样品": "sample"
+            }.get(material_type, material_type.lower())
+            download_label = f"Download {material_type_en} {material_name} shock wave plots"
+            file_name = f"{material_type_en}_{material_name}_shock_relations.png"
                 
             st.download_button(
                 label=download_label,
@@ -831,7 +798,7 @@ def display_material_plots(df, material_name, material_type, use_english=False):
                 mime="image/png"
             )
     else:
-        st.info(f"没有可用数据生成{material_type}材料{material_name}的图像")
+        st.info(f"No available data to generate {material_type} material {material_name} images")
 
 # 结果绘图函数
 @st.cache_data(ttl=3600)  # 缓存图像结果
@@ -861,37 +828,37 @@ def plot_results_streamlit(results):
     ax1.errorbar(uf_values, pf_values, 
                  yerr=[r.get('Pf_err', 0.1) for r in results],
                  xerr=[r.get('uf_err', 0.05) for r in results],
-                 fmt='bo', ecolor='r', capsize=5, label='飞片数据')
-    ax1.set_xlabel('粒子速度 Up (km/s)')
-    ax1.set_ylabel('冲击压力 P (GPa)')
-    ax1.set_title('压力-粒子速度关系（带误差范围）')
+                 fmt='bo', ecolor='r', capsize=5, label='Flyer data')
+    ax1.set_xlabel('Particle velocity Up (km/s)')
+    ax1.set_ylabel('Shock pressure P (GPa)')
+    ax1.set_title('Pressure-Particle velocity relationship (with error range)')
     ax1.legend()
     ax1.grid(True)
     
     # 2. 温度-压力图
     ax2 = fig.add_subplot(222)
-    ax2.scatter(pf_values, tf_values, c='orange', label='飞片温度')
-    ax2.set_xlabel('冲击压力 P (GPa)')
-    ax2.set_ylabel('冲击温度 T (K)')
-    ax2.set_title('温度-压力关系')
+    ax2.scatter(pf_values, tf_values, c='orange', label='Flyer temperature')
+    ax2.set_xlabel('Shock pressure P (GPa)')
+    ax2.set_ylabel('Shock temperature T (K)')
+    ax2.set_title('Temperature-Pressure relationship')
     ax2.legend()
     ax2.grid(True)
     
     # 3. 冲击波速度-粒子速度图
     ax3 = fig.add_subplot(223)
-    ax3.scatter(uf_values, df_values, c='blue', label='飞片')
-    ax3.set_xlabel('粒子速度 Up (km/s)')
-    ax3.set_ylabel('冲击波速度 Us (km/s)')
-    ax3.set_title('冲击波速度-粒子速度关系')
+    ax3.scatter(uf_values, df_values, c='blue', label='Flyer')
+    ax3.set_xlabel('Particle velocity Up (km/s)')
+    ax3.set_ylabel('Shock wave velocity Us (km/s)')
+    ax3.set_title('Shock wave velocity-Particle velocity relationship')
     ax3.legend()
     ax3.grid(True)
     
     # 4. 密度-压力图
     ax4 = fig.add_subplot(224)
-    ax4.scatter(pf_values, rhf_values, c='green', label='飞片')
-    ax4.set_xlabel('冲击压力 P (GPa)')
-    ax4.set_ylabel('压缩密度 (g/cm³)')
-    ax4.set_title('密度-压力关系')
+    ax4.scatter(pf_values, rhf_values, c='green', label='Flyer')
+    ax4.set_xlabel('Shock pressure P (GPa)')
+    ax4.set_ylabel('Compressed density (g/cm³)')
+    ax4.set_title('Density-Pressure relationship')
     ax4.legend()
     ax4.grid(True)
     
@@ -900,74 +867,74 @@ def plot_results_streamlit(results):
 
 # 页面函数
 def home_page():
-    st.title("冲击波参数计算与分析系统")
+    st.title("Shock Wave Parameter Calculation and Analysis System")
     st.info("""
-    系统核心模型说明：
-    1. 基于Rankine-Hugoniot守恒方程组（质量、动量、能量守恒）
-    2. 假设条件：平面冲击波、稳态传播、忽略初始压力
-    3. 单位系统：密度(g/cm³)、速度(km/s)、压力(GPa)
+    System Core Model Description:
+    1. Based on Rankine-Hugoniot conservation equations (mass, momentum, energy conservation)
+    2. Assumptions: planar shock wave, steady propagation, initial pressure neglected
+    3. Unit system: density (g/cm³), velocity (km/s), pressure (GPa)
     """)
     
     # 查看数据库快捷入口
-    if st.button("查看数据库"):
+    if st.button("View Database"):
         st.session_state.page = "view_database"
         st.rerun()
     
-    st.write("选择操作模式：")
+    st.write("Select operation mode:")
     
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("使用数据库数据"):
+        if st.button("Use Database Data"):
             st.session_state.page = "database_mode"
             st.rerun()  # 立即刷新页面
     with col2:
-        if st.button("手动输入参数"):
+        if st.button("Manual Input Parameters"):
             st.session_state.page = "manual_mode"
             st.rerun()  # 立即刷新页面
 
 def database_mode_page():
-    st.title("数据库模式")
-    st.write("从数据库加载材料数据，基于Hugoniot关系拟合参数并求解")
+    st.title("Database Mode")
+    st.write("Load material data from database, fit parameters based on Hugoniot relationships and solve")
     
     # 查看数据库快捷入口
-    if st.button("查看数据库"):
+    if st.button("View Database"):
         st.session_state.page = "view_database"
         st.rerun()
     
     materials = get_all_materials()
     if not materials:
-        st.error("数据库中没有可用材料")
+        st.error("No materials available in database")
         return
     
     col1, col2, col3 = st.columns(3)
     with col1:
-        flyer_material = st.selectbox("飞片材料", materials, key="flyer_material")
+        flyer_material = st.selectbox("Flyer material", materials, key="flyer_material")
     with col2:
-        base_material = st.selectbox("基板材料", materials, key="base_material")
+        base_material = st.selectbox("Substrate material", materials, key="base_material")
     with col3:
-        sample_material = st.selectbox("样品材料", materials, key="sample_material")
+        sample_material = st.selectbox("Sample material", materials, key="sample_material")
     
     # 检测相同材料并提供共享选项
-    st.subheader("材料参数共享设置")
+    st.subheader("Material Parameter Sharing Settings")
     material_relations = {}
     
     # 飞片与基板是否相同
     if flyer_material == base_material:
-        share_flyer_base = st.checkbox(f"飞片与基板均为{flyer_material}，共享参数", value=True)
+        share_flyer_base = st.checkbox(f"Flyer and substrate are both {flyer_material}, share parameters", value=True)
         material_relations['flyer_base'] = share_flyer_base
     else:
         material_relations['flyer_base'] = False
         
     # 基板与样品是否相同
     if base_material == sample_material:
-        share_base_sample = st.checkbox(f"基板与样品均为{base_material}，共享参数", value=True)
+        share_base_sample = st.checkbox(f"Substrate and sample are both {base_material}, share parameters", value=True)
         material_relations['base_sample'] = share_base_sample
     else:
         material_relations['base_sample'] = False
         
     # 飞片与样品是否相同
     if flyer_material == sample_material and not material_relations.get('flyer_base', False) or not material_relations.get('base_sample', False):
-        share_flyer_sample = st.checkbox(f"飞片与样品均为{flyer_material}，共享参数", value=True)
+        share_flyer_sample = st.checkbox(f"Flyer and sample are both {flyer_material}, share parameters", value=True)
         material_relations['flyer_sample'] = share_flyer_sample
     else:
         material_relations['flyer_sample'] = False
@@ -989,49 +956,49 @@ def database_mode_page():
         sample_df = get_material_data(sample_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho', 'exp_method'])
     
     # 为每种材料类型拟合数据并清晰标注
-    with st.spinner(f"正在拟合飞片材料{flyer_material}的数据..."):
-        flyer_fit = fit_material_data(flyer_df, flyer_material, "飞片")
+    with st.spinner(f"Fitting flyer material {flyer_material} data..."):
+        flyer_fit = fit_material_data(flyer_df, flyer_material, "Flyer")
     
     # 根据共享设置决定是否复用拟合结果
     if material_relations['flyer_base']:
         base_fit = flyer_fit
-        st.info(f"基板与飞片材料相同，复用飞片的拟合参数")
+        st.info(f"Substrate and flyer materials are the same, reusing flyer fitting parameters")
     else:
-        with st.spinner(f"正在拟合基板材料{base_material}的数据..."):
-            base_fit = fit_material_data(base_df, base_material, "基板")
+        with st.spinner(f"Fitting substrate material {base_material} data..."):
+            base_fit = fit_material_data(base_df, base_material, "Substrate")
     
     if material_relations['base_sample'] and not material_relations['flyer_base']:
         sample_fit = base_fit
-        st.info(f"样品与基板材料相同，复用基板的拟合参数")
+        st.info(f"Sample and substrate materials are the same, reusing substrate fitting parameters")
     elif material_relations['flyer_sample']:
         sample_fit = flyer_fit
-        st.info(f"样品与飞片材料相同，复用飞片的拟合参数")
+        st.info(f"Sample and flyer materials are the same, reusing flyer fitting parameters")
     else:
-        with st.spinner(f"正在拟合样品材料{sample_material}的数据..."):
-            sample_fit = fit_material_data(sample_df, sample_material, "样品")
+        with st.spinner(f"Fitting sample material {sample_material} data..."):
+            sample_fit = fit_material_data(sample_df, sample_material, "Sample")
     
     # 冲击波参数分析部分，为每种材料单独绘图
-    st.subheader("冲击波参数分析（Hugoniot关系）")
+    st.subheader("Shock Wave Parameter Analysis (Hugoniot Relationship)")
     st.caption("""
-    基于线性Hugoniot关系Us = C0 + S·Up进行分析，其中：
-    - C0：材料的体声速（零压状态下的声速，单位km/s）
-    - S：Hugoniot参数（描述冲击波速度随粒子速度的变化率，无量纲）
-    - 应用说明：在高压下（如>100 GPa）可能出现偏差，需考虑相变或非线性项
-    - 数据点颜色区分：iml(红色)、ssp(蓝色)、计算值(绿色)、手动输入(紫色)、批量导入(橙色)
+    Based on linear Hugoniot relationship Us = C0 + S·Up:
+    - C0: Bulk sound speed of the material (sound speed at zero pressure, unit km/s)
+    - S: Hugoniot parameter (describes the rate of shock wave velocity change with particle velocity, dimensionless)
+    - Application note: Deviations may occur at high pressures (e.g., >100 GPa), phase transitions or nonlinear terms should be considered
+    - Data point color coding: iml(red), ssp(blue), calculated(green), manual input(purple), bulk import(orange)
     """)
     
-    # 为每种材料类型显示单独的图像，数据库模式下设置use_english=True
-    display_material_plots(flyer_df, flyer_material, "飞片", use_english=True)
+    # 为每种材料类型显示单独的图像，使用英文
+    display_material_plots(flyer_df, flyer_material, "Flyer", use_english=True)
     
     if not material_relations['flyer_base']:
-        display_material_plots(base_df, base_material, "基板", use_english=True)
+        display_material_plots(base_df, base_material, "Substrate", use_english=True)
     else:
-        st.info(f"基板与飞片材料相同，复用飞片的冲击波图像")
+        st.info(f"Substrate and flyer materials are the same, reusing flyer shock wave images")
     
     if (material_relations['base_sample'] and not material_relations['flyer_base']) or material_relations['flyer_sample']:
-        st.info(f"样品与{'基板' if material_relations['base_sample'] else '飞片'}材料相同，复用{'基板' if material_relations['base_sample'] else '飞片'}的冲击波图像")
+        st.info(f"Sample and {'substrate' if material_relations['base_sample'] else 'flyer'} materials are the same, reusing {'substrate' if material_relations['base_sample'] else 'flyer'} shock wave images")
     else:
-        display_material_plots(sample_df, sample_material, "样品", use_english=True)
+        display_material_plots(sample_df, sample_material, "Sample", use_english=True)
     
     default_params = {"f": flyer_fit, "b": base_fit, "s": sample_fit}
     # 参数定义
@@ -1045,34 +1012,34 @@ def database_mode_page():
     sym_vars = {}
     
     # 飞片参数
-    with st.expander(f"{flyer_material}飞片参数", expanded=True):
+    with st.expander(f"{flyer_material} Flyer Parameters", expanded=True):
         cols = st.columns(3)
         var_descs = {
-            "rh0f": "初始密度",
-            "rhf": "压缩密度",
-            "Df": "冲击波速度（对应Us）",
-            "C0f": "体声速（Hugoniot拟合）",
-            "Sf": "Hugoniot参数S（无量纲）",
-            "E0f": "初始内能密度",
-            "Ef": "压缩内能密度",
-            "uf": "粒子速度（对应Up）",
-            "w": "飞片初始撞击速度",
-            "Pf": "冲击压力",
-            "gammaf": "格吕奈森系数",
-            "Tf": "冲击温度 (K)"
+            "rh0f": "Initial density",
+            "rhf": "Compressed density",
+            "Df": "Shock wave velocity (corresponds to Us)",
+            "C0f": "Bulk sound speed (Hugoniot fitting)",
+            "Sf": "Hugoniot parameter S (dimensionless)",
+            "E0f": "Initial internal energy density",
+            "Ef": "Compressed internal energy density",
+            "uf": "Particle velocity (corresponds to Up)",
+            "w": "Initial impact velocity of flyer",
+            "Pf": "Shock pressure",
+            "gammaf": "Grüneisen coefficient",
+            "Tf": "Shock temperature (K)"
         }
         var_units = {
             "rh0f": "g/cm³",
             "rhf": "g/cm³",
             "Df": "km/s",
             "C0f": "km/s",
-            "Sf": "无量纲",
+            "Sf": "dimensionless",
             "E0f": "GPa·cm³/g",
             "Ef": "GPa·cm³/g",
             "uf": "km/s",
             "w": "km/s",
             "Pf": "GPa",
-            "gammaf": "无量纲",
+            "gammaf": "dimensionless",
             "Tf": "K"
         }
         for i, var in enumerate(variables["f"]):
@@ -1100,9 +1067,9 @@ def database_mode_page():
     
     # 基板参数 - 根据共享设置决定是否禁用输入
     disabled_base = material_relations['flyer_base']
-    with st.expander(f"{base_material}基板参数 {'(与飞片共享参数)' if disabled_base else ''}", expanded=not disabled_base):
+    with st.expander(f"{base_material} Substrate Parameters {'(sharing with flyer)' if disabled_base else ''}", expanded=not disabled_base):
         if disabled_base:
-            st.info(f"基板与飞片均为{flyer_material}，将使用飞片的参数值")
+            st.info(f"Substrate and flyer are both {flyer_material}, will use flyer parameter values")
         
         cols = st.columns(3)
         for i, var in enumerate(variables["b"]):
@@ -1140,18 +1107,18 @@ def database_mode_page():
                          "km/s" if var in ["Db", "C0b", "ub"] else 
                          "GPa·cm³/g" if var in ["E0b", "Eb"] else
                          "GPa" if var == "Pb" else 
-                         "K" if var == "Tb" else "无量纲",
-                    desc="初始密度" if var == "rh0b" else
-                         "压缩密度" if var == "rhb" else
-                         "冲击波速度" if var == "Db" else
-                         "体声速" if var == "C0b" else
-                         "Hugoniot参数" if var == "Sb" else
-                         "初始内能密度" if var == "E0b" else
-                         "压缩内能密度" if var == "Eb" else
-                         "粒子速度" if var == "ub" else
-                         "冲击压力" if var == "Pb" else
-                         "格吕奈森系数" if var == "gammab" else
-                         "冲击温度",
+                         "K" if var == "Tb" else "dimensionless",
+                    desc="Initial density" if var == "rh0b" else
+                         "Compressed density" if var == "rhb" else
+                         "Shock wave velocity" if var == "Db" else
+                         "Bulk sound speed" if var == "C0b" else
+                         "Hugoniot parameter" if var == "Sb" else
+                         "Initial internal energy density" if var == "E0b" else
+                         "Compressed internal energy density" if var == "Eb" else
+                         "Particle velocity" if var == "ub" else
+                         "Shock pressure" if var == "Pb" else
+                         "Grüneisen coefficient" if var == "gammab" else
+                         "Shock temperature",
                     disabled=disabled_base
                 )
                 input_params[var] = val
@@ -1159,11 +1126,11 @@ def database_mode_page():
     
     # 样品参数 - 根据共享设置决定是否禁用输入
     disabled_sample = material_relations['base_sample'] and not material_relations['flyer_base'] or material_relations['flyer_sample']
-    share_source = "基板" if (material_relations['base_sample'] and not material_relations['flyer_base']) else "飞片"
+    share_source = "substrate" if (material_relations['base_sample'] and not material_relations['flyer_base']) else "flyer"
     
-    with st.expander(f"{sample_material}样品参数 {'(与' + share_source + '共享参数)' if disabled_sample else ''}", expanded=not disabled_sample):
+    with st.expander(f"{sample_material} Sample Parameters {'(sharing with ' + share_source + ')' if disabled_sample else ''}", expanded=not disabled_sample):
         if disabled_sample:
-            st.info(f"样品与{share_source}均为{sample_material}，将使用{share_source}的参数值")
+            st.info(f"Sample and {share_source} are both {sample_material}, will use {share_source} parameter values")
         
         cols = st.columns(3)
         for i, var in enumerate(variables["s"]):
@@ -1208,18 +1175,18 @@ def database_mode_page():
                          "km/s" if var in ["Ds", "C0s", "us"] else 
                          "GPa·cm³/g" if var in ["E0s", "Es"] else
                          "GPa" if var == "Ps" else 
-                         "K" if var == "Ts" else "无量纲",
-                    desc="初始密度" if var == "rh0s" else
-                         "压缩密度" if var == "rhs" else
-                         "冲击波速度" if var == "Ds" else
-                         "体声速" if var == "C0s" else
-                         "Hugoniot参数" if var == "Ss" else
-                         "初始内能密度" if var == "E0s" else
-                         "压缩内能密度" if var == "Es" else
-                         "粒子速度" if var == "us" else
-                         "冲击压力" if var == "Ps" else
-                         "格吕奈森系数" if var == "gammas" else
-                         "冲击温度",
+                         "K" if var == "Ts" else "dimensionless",
+                    desc="Initial density" if var == "rh0s" else
+                         "Compressed density" if var == "rhs" else
+                         "Shock wave velocity" if var == "Ds" else
+                         "Bulk sound speed" if var == "C0s" else
+                         "Hugoniot parameter" if var == "Ss" else
+                         "Initial internal energy density" if var == "E0s" else
+                         "Compressed internal energy density" if var == "Es" else
+                         "Particle velocity" if var == "us" else
+                         "Shock pressure" if var == "Ps" else
+                         "Grüneisen coefficient" if var == "gammas" else
+                         "Shock temperature",
                     disabled=disabled_sample
                 )
                 input_params[var] = val
@@ -1228,10 +1195,10 @@ def database_mode_page():
     # 固定显示保存当前参数按钮
     col_save, col_other = st.columns([1, 3])
     with col_save:
-        if st.button("保存当前参数到数据库"):
+        if st.button("Save Current Parameters to Database"):
             count = save_input_parameters(input_params, sample_material, "database_mode_input")
             if count > 0:
-                st.success(f"已保存到材料 {sample_material} 的数据集，共 {count} 条记录")
+                st.success(f"Saved to {sample_material} dataset, total {count} records")
     
     # 参数组合限制
     range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
@@ -1240,18 +1207,18 @@ def database_mode_page():
         total_combinations *= len(v)
     
     max_combinations = st.slider(
-        "最大参数组合数量（过多会影响速度）", 
+        "Maximum parameter combinations (too many will affect speed)", 
         min_value=10, 
         max_value=1000, 
         value=min(100, total_combinations)
     )
     
-    if st.button("开始求解"):
+    if st.button("Start Solving"):
         valid = True
         for var, val in input_params.items():
             if val is None:
                 valid = False
-                st.error(f"{var}输入无效，请检查")
+                st.error(f"{var} input is invalid, please check")
         
         if not valid:
             return
@@ -1261,7 +1228,7 @@ def database_mode_page():
         # 截断过多的组合
         combinations = list(combinations)
         if len(combinations) > max_combinations:
-            st.warning(f"参数组合过多（{len(combinations)}），截断为{max_combinations}以提高速度")
+            st.warning(f"Too many parameter combinations ({len(combinations)}), truncated to {max_combinations} for speed")
             combinations = combinations[:max_combinations]
         
         results = []
@@ -1384,24 +1351,24 @@ def database_mode_page():
                     record['sample_material'] = sample_material
                     results.append(record)
             except Exception as e:
-                st.warning(f"求解错误: {str(e)}（可能由高压下的非线性效应引起，请检查参数范围）")
+                st.warning(f"Solution error: {str(e)} (may be caused by nonlinear effects at high pressure, please check parameter range)")
         
         if results:
-            st.success(f"求解完成，找到{len(results)}个解（结果基于理想冲击波假设，实际应用需验证）")
+            st.success(f"Solution completed, found {len(results)} solutions (results are based on ideal shock wave assumptions, practical application requires verification)")
             
-            st.subheader("结果数据（单位：rho=g/cm³, D=km/s, u=km/s, P=GPa, T=K）")
+            st.subheader("Result data (units: rho=g/cm³, D=km/s, u=km/s, P=GPa, T=K)")
             df = pd.DataFrame(results)
             st.dataframe(df)
             
             csv = df.to_csv(index=False)
             st.download_button(
-                label="下载结果数据",
+                label="Download result data",
                 data=csv,
                 file_name="solver_results.csv",
                 mime="text/csv",
             )
             
-            st.subheader("结果可视化")
+            st.subheader("Result visualization")
             fig = plot_results_streamlit(results)
             if fig:
                 st.pyplot(fig)
@@ -1409,60 +1376,60 @@ def database_mode_page():
                 fig.savefig(buf2, format='png', dpi=150, bbox_inches='tight')
                 buf2.seek(0)
                 st.download_button(
-                    label="下载图表",
+                    label="Download charts",
                     data=buf2,
                     file_name="analysis_with_temp_error.png",
                     mime="image/png"
                 )
             
-            if st.button("保存结果到数据库"):
+            if st.button("Save results to database"):
                 count = save_results_to_db(results, sample_material)
                 if count > 0:
-                    st.success(f"已保存到材料 {sample_material} 的数据集，共 {count} 条记录")
+                    st.success(f"Saved to {sample_material} dataset, total {count} records")
     
-    if st.button("返回首页"):
+    if st.button("Return to homepage"):
         st.session_state.page = "home"
         st.rerun()  # 立即刷新页面
 
 def manual_mode_page():
-    st.title("手动输入模式")
-    st.write("通过手动输入参数进行求解，适用于没有数据库数据的场景")
+    st.title("Manual Input Mode")
+    st.write("Solve by manually entering parameters, suitable for scenarios without database data")
     
     # 查看数据库快捷入口
-    if st.button("查看数据库"):
+    if st.button("View Database"):
         st.session_state.page = "view_database"
         st.rerun()
     
-    # 材料参数输入
+    # 材料参数输入 - 默认值改为英文
     col1, col2, col3 = st.columns(3)
     with col1:
-        flyer_material = st.text_input("飞片材料名称", value="铜", help="输入材料名称，如：铜、铝等")
+        flyer_material = st.text_input("Flyer material name", value="Copper", help="Enter material name, e.g.: Copper, Aluminum")
     with col2:
-        base_material = st.text_input("基板材料名称", value="铝", help="输入材料名称，如：铜、铝等")
+        base_material = st.text_input("Substrate material name", value="Aluminum", help="Enter material name, e.g.: Copper, Aluminum")
     with col3:
-        sample_material = st.text_input("样品材料名称", value="铜", help="输入材料名称，如：铜、铝等")
+        sample_material = st.text_input("Sample material name", value="Copper", help="Enter material name, e.g.: Copper, Aluminum")
     
     # 检测相同材料并提供共享选项
-    st.subheader("材料参数共享设置")
+    st.subheader("Material Parameter Sharing Settings")
     material_relations = {}
     
     # 飞片与基板是否相同
     if flyer_material == base_material:
-        share_flyer_base = st.checkbox(f"飞片与基板均为{flyer_material}，共享参数", value=True)
+        share_flyer_base = st.checkbox(f"Flyer and substrate are both {flyer_material}, share parameters", value=True)
         material_relations['flyer_base'] = share_flyer_base
     else:
         material_relations['flyer_base'] = False
         
     # 基板与样品是否相同
     if base_material == sample_material:
-        share_base_sample = st.checkbox(f"基板与样品均为{base_material}，共享参数", value=True)
+        share_base_sample = st.checkbox(f"Substrate and sample are both {base_material}, share parameters", value=True)
         material_relations['base_sample'] = share_base_sample
     else:
         material_relations['base_sample'] = False
         
     # 飞片与样品是否相同
     if flyer_material == sample_material and not (material_relations.get('flyer_base', False) and material_relations.get('base_sample', False)):
-        share_flyer_sample = st.checkbox(f"飞片与样品均为{flyer_material}，共享参数", value=True)
+        share_flyer_sample = st.checkbox(f"Flyer and sample are both {flyer_material}, share parameters", value=True)
         material_relations['flyer_sample'] = share_flyer_sample
     else:
         material_relations['flyer_sample'] = False
@@ -1472,90 +1439,90 @@ def manual_mode_page():
     with col1:
         # 格吕奈森系数 - 根据共享设置决定是否需要单独设置
         if material_relations['flyer_base'] and material_relations['base_sample']:
-            gamma = st.number_input("格吕奈森系数Γ（所有材料共用）", value=2.0, min_value=0.1, help="铜约为2.0，铝约为2.13")
+            gamma = st.number_input("Grüneisen coefficient Γ (shared by all materials)", value=2.0, min_value=0.1, help="Approximately 2.0 for Copper, 2.13 for Aluminum")
             gamma_flyer = gamma_base = gamma_sample = gamma
         elif material_relations['flyer_base']:
-            gamma_flyer_base = st.number_input(f"格吕奈森系数Γ（飞片与基板共用，{flyer_material}）", value=2.0, min_value=0.1)
-            gamma_sample = st.number_input(f"格吕奈森系数Γ（样品，{sample_material}）", value=2.0, min_value=0.1)
+            gamma_flyer_base = st.number_input(f"Grüneisen coefficient Γ (shared by flyer and substrate, {flyer_material})", value=2.0, min_value=0.1)
+            gamma_sample = st.number_input(f"Grüneisen coefficient Γ (sample, {sample_material})", value=2.0, min_value=0.1)
             gamma_flyer = gamma_base = gamma_flyer_base
         elif material_relations['base_sample']:
-            gamma_base_sample = st.number_input(f"格吕奈森系数Γ（基板与样品共用，{base_material}）", value=2.0, min_value=0.1)
-            gamma_flyer = st.number_input(f"格吕奈森系数Γ（飞片，{flyer_material}）", value=2.0, min_value=0.1)
+            gamma_base_sample = st.number_input(f"Grüneisen coefficient Γ (shared by substrate and sample, {base_material})", value=2.0, min_value=0.1)
+            gamma_flyer = st.number_input(f"Grüneisen coefficient Γ (flyer, {flyer_material})", value=2.0, min_value=0.1)
             gamma_base = gamma_sample = gamma_base_sample
         elif material_relations['flyer_sample']:
-            gamma_flyer_sample = st.number_input(f"格吕奈森系数Γ（飞片与样品共用，{flyer_material}）", value=2.0, min_value=0.1)
-            gamma_base = st.number_input(f"格吕奈森系数Γ（基板，{base_material}）", value=2.0, min_value=0.1)
+            gamma_flyer_sample = st.number_input(f"Grüneisen coefficient Γ (shared by flyer and sample, {flyer_material})", value=2.0, min_value=0.1)
+            gamma_base = st.number_input(f"Grüneisen coefficient Γ (substrate, {base_material})", value=2.0, min_value=0.1)
             gamma_flyer = gamma_sample = gamma_flyer_sample
         else:
-            gamma_flyer = st.number_input(f"格吕奈森系数Γ（飞片，{flyer_material}）", value=2.0, min_value=0.1)
-            gamma_base = st.number_input(f"格吕奈森系数Γ（基板，{base_material}）", value=2.0, min_value=0.1)
-            gamma_sample = st.number_input(f"格吕奈森系数Γ（样品，{sample_material}）", value=2.0, min_value=0.1)
+            gamma_flyer = st.number_input(f"Grüneisen coefficient Γ (flyer, {flyer_material})", value=2.0, min_value=0.1)
+            gamma_base = st.number_input(f"Grüneisen coefficient Γ (substrate, {base_material})", value=2.0, min_value=0.1)
+            gamma_sample = st.number_input(f"Grüneisen coefficient Γ (sample, {sample_material})", value=2.0, min_value=0.1)
     
     with col2:
         # 定容比热容 - 根据共享设置决定是否需要单独设置
         if material_relations['flyer_base'] and material_relations['base_sample']:
-            Cv = st.number_input("定容比热容Cv (J/(kg·K))（所有材料共用）", value=385, help="铜约为385，铝约为900")
+            Cv = st.number_input("Specific heat capacity at constant volume Cv (J/(kg·K)) (shared by all materials)", value=385, help="Approximately 385 for Copper, 900 for Aluminum")
             Cv_flyer = Cv_base = Cv_sample = Cv
         elif material_relations['flyer_base']:
-            Cv_flyer_base = st.number_input(f"定容比热容Cv (J/(kg·K))（飞片与基板共用，{flyer_material}）", value=385)
-            Cv_sample = st.number_input(f"定容比热容Cv (J/(kg·K))（样品，{sample_material}）", value=385)
+            Cv_flyer_base = st.number_input(f"Specific heat capacity Cv (J/(kg·K)) (shared by flyer and substrate, {flyer_material})", value=385)
+            Cv_sample = st.number_input(f"Specific heat capacity Cv (J/(kg·K)) (sample, {sample_material})", value=385)
             Cv_flyer = Cv_base = Cv_flyer_base
         elif material_relations['base_sample']:
-            Cv_base_sample = st.number_input(f"定容比热容Cv (J/(kg·K))（基板与样品共用，{base_material}）", value=385)
-            Cv_flyer = st.number_input(f"定容比热容Cv (J/(kg·K))（飞片，{flyer_material}）", value=385)
+            Cv_base_sample = st.number_input(f"Specific heat capacity Cv (J/(kg·K)) (shared by substrate and sample, {base_material})", value=385)
+            Cv_flyer = st.number_input(f"Specific heat capacity Cv (J/(kg·K)) (flyer, {flyer_material})", value=385)
             Cv_base = Cv_sample = Cv_base_sample
         elif material_relations['flyer_sample']:
-            Cv_flyer_sample = st.number_input(f"定容比热容Cv (J/(kg·K))（飞片与样品共用，{flyer_material}）", value=385)
-            Cv_base = st.number_input(f"定容比热容Cv (J/(kg·K))（基板，{base_material}）", value=385)
+            Cv_flyer_sample = st.number_input(f"Specific heat capacity Cv (J/(kg·K)) (shared by flyer and sample, {flyer_material})", value=385)
+            Cv_base = st.number_input(f"Specific heat capacity Cv (J/(kg·K)) (substrate, {base_material})", value=385)
             Cv_flyer = Cv_sample = Cv_flyer_sample
         else:
-            Cv_flyer = st.number_input(f"定容比热容Cv (J/(kg·K))（飞片，{flyer_material}）", value=385)
-            Cv_base = st.number_input(f"定容比热容Cv (J/(kg·K))（基板，{base_material}）", value=385)
-            Cv_sample = st.number_input(f"定容比热容Cv (J/(kg·K))（样品，{sample_material}）", value=385)
+            Cv_flyer = st.number_input(f"Specific heat capacity Cv (J/(kg·K)) (flyer, {flyer_material})", value=385)
+            Cv_base = st.number_input(f"Specific heat capacity Cv (J/(kg·K)) (substrate, {base_material})", value=385)
+            Cv_sample = st.number_input(f"Specific heat capacity Cv (J/(kg·K)) (sample, {sample_material})", value=385)
     
-    exp_method = st.text_input("实验方法/数据来源", value="manual_input", help="记录数据来源，如：iml、ssp、实验设备、文献等")
+    exp_method = st.text_input("Experimental method/data source", value="manual_input", help="Record data source, e.g.: iml, ssp, experimental equipment, literature, etc.")
     
     # 冲击波参数快速计算
-    st.subheader("冲击波参数快速计算")
+    st.subheader("Quick Calculation of Shock Wave Parameters")
     st.caption("""
-    基于Rankine-Hugoniot守恒方程组，适用于理想平面冲击波：
-    - 公式：P = ρ0·Us·Up，ρ = ρ0·Us/(Us-Up)，V/V0 = 1 - Up/Us
-    - 输入要求：Us > Up（冲击波速度必须大于粒子速度）
-    - 单位：ρ0(g/cm³)，Us(km/s)，Up(km/s) → 输出P(GPa)
+    Based on Rankine-Hugoniot conservation equations, applicable to ideal planar shock waves:
+    - Formulas: P = ρ0·Us·Up, ρ = ρ0·Us/(Us-Up), V/V0 = 1 - Up/Us
+    - Input requirements: Us > Up (shock wave velocity must be greater than particle velocity)
+    - Units: ρ0(g/cm³), Us(km/s), Up(km/s) → Output P(GPa)
     """)
     
-    # 选择要计算的材料
-    calc_material = st.selectbox("选择要计算的材料", [flyer_material, base_material, sample_material])
+    # 选择要计算的材料（已统一为英文）
+    calc_material = st.selectbox("Select material to calculate", [flyer_material, base_material, sample_material])
     
     col1, col2, col3 = st.columns(3)
     with col1:
-        U_s = st.number_input("冲击波速度Us (km/s)", min_value=0.01, value=5.0, help="必须大于粒子速度Up")
-        Us_err = st.number_input("Us误差 (km/s)", 0.1, help="测量误差")
+        U_s = st.number_input("Shock wave velocity Us (km/s)", min_value=0.01, value=5.0, help="Must be greater than particle velocity Up")
+        Us_err = st.number_input("Us error (km/s)", 0.1, help="Measurement error")
     with col2:
-        u_p = st.number_input("粒子速度Up (km/s)", min_value=0.0, value=1.0, help="必须小于冲击波速度Us")
-        Up_err = st.number_input("Up误差 (km/s)", 0.05, help="测量误差")
+        u_p = st.number_input("Particle velocity Up (km/s)", min_value=0.0, value=1.0, help="Must be less than shock wave velocity Us")
+        Up_err = st.number_input("Up error (km/s)", 0.05, help="Measurement error")
     with col3:
         # 根据所选材料自动选择密度和相关参数
         if calc_material == flyer_material:
-            rho0 = st.number_input(f"初始密度ρ0 (g/cm³) - {flyer_material}", min_value=0.01, value=8.96)
+            rho0 = st.number_input(f"Initial density ρ0 (g/cm³) - {flyer_material}", min_value=0.01, value=8.96)
             gamma = gamma_flyer
             Cv = Cv_flyer
         elif calc_material == base_material:
-            rho0 = st.number_input(f"初始密度ρ0 (g/cm³) - {base_material}", min_value=0.01, value=2.7)
+            rho0 = st.number_input(f"Initial density ρ0 (g/cm³) - {base_material}", min_value=0.01, value=2.7)
             gamma = gamma_base
             Cv = Cv_base
         else:
-            rho0 = st.number_input(f"初始密度ρ0 (g/cm³) - {sample_material}", min_value=0.01, value=8.96)
+            rho0 = st.number_input(f"Initial density ρ0 (g/cm³) - {sample_material}", min_value=0.01, value=8.96)
             gamma = gamma_sample
             Cv = Cv_sample
-        rho0_err = st.number_input("ρ0误差 (g/cm³)", 0.02, help="测量误差")
+        rho0_err = st.number_input("ρ0 error (g/cm³)", 0.02, help="Measurement error")
     
     # 存储计算结果用于保存
     calculation_result = None
     
-    if st.button("计算冲击波参数"):
+    if st.button("Calculate shock wave parameters"):
         if U_s <= u_p:
-            st.error("物理参数错误：冲击波速度Us必须大于粒子速度Up")
+            st.error("Physical parameter error: Shock wave velocity Us must be greater than particle velocity Up")
         else:
             P, V, rho, V_V0, T = calculate_shock_parameters(
                 U_s, u_p, rho0, gamma, Cv
@@ -1577,21 +1544,21 @@ def manual_mode_page():
             }
             
             st.success(f"""
-            计算结果（基于理想冲击波假设）：
-            - 冲击压力 P = {P:.2f} ± {error_params['P_err']:.2f} GPa
-            - 冲击温度 T = {T:.0f} K
-            - 压缩密度 ρ = {rho:.2f} g/cm³
-            - 比体积比 V/V0 = {V_V0:.4f}
+            Calculation results (based on ideal shock wave assumptions):
+            - Shock pressure P = {P:.2f} ± {error_params['P_err']:.2f} GPa
+            - Shock temperature T = {T:.0f} K
+            - Compressed density ρ = {rho:.2f} g/cm³
+            - Specific volume ratio V/V0 = {V_V0:.4f}
             """)
     
-    # 保存输入数据到数据库
+    # 保存输入数据到数据库（确保使用英文材料名称）
     if calculation_result:
-        if st.button("保存快速计算结果到数据库"):
+        if st.button("Save quick calculation results to database"):
+            # 确保材料名称是英文
             count = save_input_data_to_db(calculation_result, calc_material, exp_method)
             if count > 0:
-                st.success(f"已保存到材料 {calc_material} 的数据集，共 {count} 条记录")
+                st.success(f"Saved to {calc_material} dataset, total {count} records")
     
-    # 参数输入
     # 参数输入
     variables = {
         "f": ["rh0f", "rhf", "Df", "C0f", "Sf", "E0f", "Ef", "uf", "w", "Pf", "gammaf", "Tf"],
@@ -1603,7 +1570,7 @@ def manual_mode_page():
     sym_vars = {}
     
     # 飞片参数
-    with st.expander(f"{flyer_material}飞片参数", expanded=True):
+    with st.expander(f"{flyer_material} Flyer Parameters", expanded=True):
         cols = st.columns(3)
         for i, var in enumerate(variables["f"]):
             with cols[i % 3]:
@@ -1617,28 +1584,28 @@ def manual_mode_page():
                          "km/s" if var in ["Df", "C0f", "uf", "w"] else 
                          "GPa·cm³/g" if var in ["E0f", "Ef"] else
                          "GPa" if var == "Pf" else
-                         "K" if var == "Tf" else "无量纲",
-                    desc="飞片初始密度" if var == "rh0f" else
-                         "飞片压缩密度" if var == "rhf" else
-                         "飞片冲击波速度" if var == "Df" else
-                         "飞片体声速" if var == "C0f" else
-                         "飞片Hugoniot参数S" if var == "Sf" else
-                         "飞片初始内能密度" if var == "E0f" else
-                         "飞片压缩内能密度" if var == "Ef" else
-                         "飞片粒子速度" if var == "uf" else
-                         "飞片初始撞击速度" if var == "w" else
-                         "飞片冲击压力" if var == "Pf" else
-                         "飞片格吕奈森系数" if var == "gammaf" else
-                         "飞片冲击温度"
+                         "K" if var == "Tf" else "dimensionless",
+                    desc="Flyer initial density" if var == "rh0f" else
+                         "Flyer compressed density" if var == "rhf" else
+                         "Flyer shock wave velocity" if var == "Df" else
+                         "Flyer bulk sound speed" if var == "C0f" else
+                         "Flyer Hugoniot parameter S" if var == "Sf" else
+                         "Flyer initial internal energy density" if var == "E0f" else
+                         "Flyer compressed internal energy density" if var == "Ef" else
+                         "Flyer particle velocity" if var == "uf" else
+                         "Flyer initial impact velocity" if var == "w" else
+                         "Flyer shock pressure" if var == "Pf" else
+                         "Flyer Grüneisen coefficient" if var == "gammaf" else
+                         "Flyer shock temperature"
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
     
     # 基板参数输入 - 根据共享设置决定是否禁用
     disabled_base = material_relations['flyer_base']
-    with st.expander(f"{base_material}基板参数 {'(与飞片共享参数)' if disabled_base else ''}", expanded=not disabled_base):
+    with st.expander(f"{base_material} Substrate Parameters {'(sharing with flyer)' if disabled_base else ''}", expanded=not disabled_base):
         if disabled_base:
-            st.info(f"基板与飞片均为{flyer_material}，将使用飞片的参数值")
+            st.info(f"Substrate and flyer are both {flyer_material}, will use flyer parameter values")
         
         cols = st.columns(3)
         for i, var in enumerate(variables["b"]):
@@ -1667,18 +1634,18 @@ def manual_mode_page():
                          "km/s" if var in ["Db", "C0b", "ub"] else 
                          "GPa·cm³/g" if var in ["E0b", "Eb"] else
                          "GPa" if var == "Pb" else
-                         "K" if var == "Tb" else "无量纲",
-                    desc="基板初始密度" if var == "rh0b" else
-                         "基板压缩密度" if var == "rhb" else
-                         "基板冲击波速度" if var == "Db" else
-                         "基板体声速" if var == "C0b" else
-                         "基板Hugoniot参数" if var == "Sb" else
-                         "基板初始内能密度" if var == "E0b" else
-                         "基板压缩内能密度" if var == "Eb" else
-                         "基板粒子速度" if var == "ub" else
-                         "基板冲击压力" if var == "Pb" else
-                         "基板格吕奈森系数" if var == "gammab" else
-                         "基板冲击温度",
+                         "K" if var == "Tb" else "dimensionless",
+                    desc="Substrate initial density" if var == "rh0b" else
+                         "Substrate compressed density" if var == "rhb" else
+                         "Substrate shock wave velocity" if var == "Db" else
+                         "Substrate bulk sound speed" if var == "C0b" else
+                         "Substrate Hugoniot parameter" if var == "Sb" else
+                         "Substrate initial internal energy density" if var == "E0b" else
+                         "Substrate compressed internal energy density" if var == "Eb" else
+                         "Substrate particle velocity" if var == "ub" else
+                         "Substrate shock pressure" if var == "Pb" else
+                         "Substrate Grüneisen coefficient" if var == "gammab" else
+                         "Substrate shock temperature",
                     disabled=disabled_base
                 )
                 input_params[var] = val
@@ -1686,11 +1653,11 @@ def manual_mode_page():
     
     # 样品参数输入 - 根据共享设置决定是否禁用
     disabled_sample = material_relations['base_sample'] or material_relations['flyer_sample']
-    share_source = "基板" if material_relations['base_sample'] else "飞片"
+    share_source = "substrate" if material_relations['base_sample'] else "flyer"
     
-    with st.expander(f"{sample_material}样品参数 {'(与' + share_source + '共享参数)' if disabled_sample else ''}", expanded=not disabled_sample):
+    with st.expander(f"{sample_material} Sample Parameters {'(sharing with ' + share_source + ')' if disabled_sample else ''}", expanded=not disabled_sample):
         if disabled_sample:
-            st.info(f"样品与{share_source}均为{sample_material}，将使用{share_source}的参数值")
+            st.info(f"Sample and {share_source} are both {sample_material}, will use {share_source} parameter values")
         
         cols = st.columns(3)
         for i, var in enumerate(variables["s"]):
@@ -1726,18 +1693,18 @@ def manual_mode_page():
                          "km/s" if var in ["Ds", "C0s", "us"] else 
                          "GPa·cm³/g" if var in ["E0s", "Es"] else
                          "GPa" if var == "Ps" else
-                         "K" if var == "Ts" else "无量纲",
-                    desc="样品初始密度" if var == "rh0s" else
-                         "样品压缩密度" if var == "rhs" else
-                         "样品冲击波速度" if var == "Ds" else
-                         "样品体声速" if var == "C0s" else
-                         "样品Hugoniot参数S" if var == "Ss" else
-                         "样品初始内能密度" if var == "E0s" else
-                         "样品压缩内能密度" if var == "Es" else
-                         "样品粒子速度" if var == "us" else
-                         "样品冲击压力" if var == "Ps" else
-                         "样品格吕奈森系数" if var == "gammas" else
-                         "样品冲击温度",
+                         "K" if var == "Ts" else "dimensionless",
+                    desc="Sample initial density" if var == "rh0s" else
+                         "Sample compressed density" if var == "rhs" else
+                         "Sample shock wave velocity" if var == "Ds" else
+                         "Sample bulk sound speed" if var == "C0s" else
+                         "Sample Hugoniot parameter S" if var == "Ss" else
+                         "Sample initial internal energy density" if var == "E0s" else
+                         "Sample compressed internal energy density" if var == "Es" else
+                         "Sample particle velocity" if var == "us" else
+                         "Sample shock pressure" if var == "Ps" else
+                         "Sample Grüneisen coefficient" if var == "gammas" else
+                         "Sample shock temperature",
                     disabled=disabled_sample
                 )
                 input_params[var] = val
@@ -1746,10 +1713,10 @@ def manual_mode_page():
     # 固定显示保存当前参数按钮
     col_save, col_other = st.columns([1, 3])
     with col_save:
-        if st.button("保存当前参数到数据库"):
+        if st.button("Save current parameters to database"):
             count = save_input_parameters(input_params, sample_material, exp_method)
             if count > 0:
-                st.success(f"已保存到材料 {sample_material} 的数据集，共 {count} 条记录")
+                st.success(f"Saved to {sample_material} dataset, total {count} records")
     
     # 参数组合限制
     range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
@@ -1758,18 +1725,18 @@ def manual_mode_page():
         total_combinations *= len(v)
     
     max_combinations = st.slider(
-        "最大参数组合数量（过多会影响速度）", 
+        "Maximum parameter combinations (too many will affect speed)", 
         min_value=10, 
         max_value=1000, 
         value=min(100, total_combinations)
     )
     
-    if st.button("开始求解方程组"):
+    if st.button("Start solving equations"):
         valid = True
         for var, val in input_params.items():
             if val is None:
                 valid = False
-                st.error(f"{var}输入无效，请检查")
+                st.error(f"{var} input is invalid, please check")
         
         if not valid:
             return
@@ -1779,7 +1746,7 @@ def manual_mode_page():
         # 截断过多的组合
         combinations = list(combinations)
         if len(combinations) > max_combinations:
-            st.warning(f"参数组合过多（{len(combinations)}），截断为{max_combinations}以提高速度")
+            st.warning(f"Too many parameter combinations ({len(combinations)}), truncated to {max_combinations} for speed")
             combinations = combinations[:max_combinations]
         
         results = []
@@ -1798,10 +1765,10 @@ def manual_mode_page():
             # 检查物理合理性
             try:
                 if current_subs.get(sym_vars['Df'], 0) <= current_subs.get(sym_vars['uf'], 0):
-                    st.warning("飞片参数错误：Df（冲击波速度）必须大于uf（粒子速度）")
+                    st.warning("Flyer parameter error: Df (shock wave velocity) must be greater than uf (particle velocity)")
                     continue
                 if current_subs.get(sym_vars['Db'], 0) <= current_subs.get(sym_vars['ub'], 0):
-                    st.warning("基板参数错误：Db（冲击波速度）必须大于ub（粒子速度）")
+                    st.warning("Substrate parameter error: Db (shock wave velocity) must be greater than ub (particle velocity)")
                     continue
             except:
                 pass
@@ -1895,24 +1862,24 @@ def manual_mode_page():
                             pass
                     results.append(record)
             except Exception as e:
-                st.warning(f"求解错误: {str(e)}（可能由于参数范围超出模型适用条件）")
+                st.warning(f"Solution error: {str(e)} (may be due to parameter range exceeding model applicability)")
         
         if results:
-            st.success(f"求解完成，找到{len(results)}个解")
+            st.success(f"Solution completed, found {len(results)} solutions")
             
-            st.subheader("结果数据")
+            st.subheader("Result data")
             df = pd.DataFrame(results)
             st.dataframe(df)
             
             csv = df.to_csv(index=False)
             st.download_button(
-                label="下载结果数据",
+                label="Download result data",
                 data=csv,
                 file_name="solver_results.csv",
                 mime="text/csv",
             )
             
-            st.subheader("结果可视化")
+            st.subheader("Result visualization")
             fig = plot_results_streamlit(results)
             if fig:
                 st.pyplot(fig)
@@ -1920,20 +1887,20 @@ def manual_mode_page():
                 fig.savefig(buf2, format='png', dpi=150, bbox_inches='tight')
                 buf2.seek(0)
                 st.download_button(
-                    label="下载图表",
+                    label="Download charts",
                     data=buf2,
                     file_name="analysis_with_temp_error.png",
                     mime="image/png"
                 )
             
-            if st.button("保存计算结果到数据库"):
+            if st.button("Save calculation results to database"):
                 count = save_results_to_db(results, sample_material)
                 if count > 0:
-                    st.success(f"已保存到材料 {sample_material} 的数据集，共 {count} 条记录")
+                    st.success(f"Saved to {sample_material} dataset, total {count} records")
         else:
-            st.warning("未找到有效解（请检查参数是否符合物理规律，如冲击波速度>粒子速度）")
+            st.warning("No valid solutions found (please check if parameters conform to physical laws, e.g., shock wave velocity > particle velocity)")
     
-    if st.button("返回首页"):
+    if st.button("Return to homepage"):
         st.session_state.page = "home"
         st.rerun()  # 立即刷新页面
 
@@ -1948,16 +1915,16 @@ def main():
         st.session_state['confirm_clear'] = False
     
     st.set_page_config(
-        page_title="冲击波参数计算与分析系统",
+        page_title="Shock Wave Parameter Calculation and Analysis System",
         page_icon="✨",
         layout="wide"
     )
     
     # 数据库查看页面
     if st.session_state.page == "view_database":
-        st.title("数据库查看与管理")
+        st.title("Database View and Management")
         view_database()
-        if st.button("返回首页"):
+        if st.button("Return to homepage"):
             st.session_state.page = "home"
             st.rerun()
         return
@@ -1971,4 +1938,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
