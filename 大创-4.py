@@ -892,6 +892,8 @@ def plot_results_streamlit(results):
 
 # 页面函数
 def home_page():
+    # 记录当前页面，用于返回功能
+    st.session_state.previous_page = "home"
     st.title("冲击波参数计算与分析系统")
     st.info("""
     系统核心模型说明:
@@ -918,6 +920,8 @@ def home_page():
             st.rerun()  # 立即刷新页面
 
 def database_mode_page():
+    # 记录当前页面，用于返回功能
+    st.session_state.previous_page = "database_mode"
     st.title("数据库模式")
     st.write("从数据库加载材料数据，基于Hugoniot关系拟合参数并求解")
     
@@ -1398,6 +1402,8 @@ def database_mode_page():
         st.rerun()  # 立即刷新页面
 
 def manual_mode_page():
+    # 记录当前页面，用于返回功能
+    st.session_state.previous_page = "manual_mode"
     st.title("手动输入模式")
     st.write("通过手动输入参数进行求解，适用于没有数据库数据的场景")
     
@@ -1582,7 +1588,7 @@ def manual_mode_page():
     disabled_sample = material_relations['base_sample'] or material_relations['flyer_sample']
     share_source = "基板" if material_relations['base_sample'] else "飞片"
     
-    with expander(f"{sample_material} 样品参数 {'(与' + share_source + '共享)' if disabled_sample else ''}", expanded=not disabled_sample):
+    with st.expander(f"{sample_material} 样品参数 {'(与' + share_source + '共享)' if disabled_sample else ''}", expanded=not disabled_sample):
         if disabled_sample:
             st.info(f"样品与{share_source}均为{sample_material}，将使用{share_source}参数值")
         
@@ -1835,7 +1841,9 @@ def main():
     if 'page' not in st.session_state:
         st.session_state.page = "home"
     
-    # 初始化会话状态变量
+    # 初始化会话状态变量，包括记录上一页的变量
+    if 'previous_page' not in st.session_state:
+        st.session_state.previous_page = "home"
     if 'confirm_delete' not in st.session_state:
         st.session_state['confirm_delete'] = False
     if 'confirm_clear' not in st.session_state:
@@ -1853,9 +1861,19 @@ def main():
     if st.session_state.page == "view_database":
         st.title("数据库查看与管理")
         view_database()
-        if st.button("返回首页"):
-            st.session_state.page = "home"
-            st.rerun()
+        
+        # 添加返回上一页按钮
+        col_back, col_home = st.columns(2)
+        with col_back:
+            if st.button("返回上一页"):
+                # 返回到之前的页面，如果没有记录则返回首页
+                prev_page = st.session_state.get('previous_page', 'home')
+                st.session_state.page = prev_page
+                st.rerun()
+        with col_home:
+            if st.button("返回首页"):
+                st.session_state.page = "home"
+                st.rerun()
         return
     
     if st.session_state.page == "home":
