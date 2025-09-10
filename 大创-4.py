@@ -655,31 +655,35 @@ def solve_numerically(eqs, sym_vars, initial_guess):
         substitutions = {var_list[i]: x[i] for i in range(len(x))}
         return [float(abs(eq.subs(substitutions).evalf())) for eq in eqs]
     
-    # 执行最小二乘优化，根据物理参数调整边界范围
+    # 根据初始猜测值的长度动态生成边界
+    n_vars = len(initial_guess)
+    lower_bounds = [0.1] * n_vars  # 为每个变量设置默认下界
+    upper_bounds = [30.0] * n_vars  # 为每个变量设置默认上界
+
+    # 根据变量类型调整特定变量的边界
+    for i, var in enumerate(initial_guess.keys()):
+        var_str = str(var)
+        if var_str.startswith(('rh0', 'rh')):  # 密度
+            lower_bounds[i] = 0.1
+            upper_bounds[i] = 20.0
+        elif var_str.startswith(('D', 'C0', 'u', 'w')):  # 速度
+            lower_bounds[i] = 0.1
+            upper_bounds[i] = 30.0
+        elif var_str.startswith(('P', 'E')):  # 压力/能量
+            lower_bounds[i] = 0.01
+            upper_bounds[i] = 5000.0
+        elif var_str.startswith('gamma'):  # 格吕奈森系数
+            lower_bounds[i] = 0.1
+            upper_bounds[i] = 5.0
+        elif var_str.startswith('T'):  # 温度
+            lower_bounds[i] = 100.0
+            upper_bounds[i] = 1e5
+    
+    # 执行最小二乘优化
     result = least_squares(
         residuals,
         list(initial_guess.values()),
-        bounds=([
-            0.1,   # 密度下界 (g/cm³)
-            0.1,   # 密度下界 (g/cm³)
-            0.1,   # 速度下界 (km/s)
-            0.1,   # 速度下界 (km/s)
-            0.1,   # 速度下界 (km/s)
-            0.1,   # 速度下界 (km/s)
-            0.01,  # 压力下界 (GPa)
-            0.01,  # 压力下界 (GPa)
-            100    # 温度下界 (K)
-        ], [
-            20,    # 密度上界 (g/cm³)
-            20,    # 密度上界 (g/cm³)
-            30,    # 速度上界 (km/s)
-            30,    # 速度上界 (km/s)
-            30,    # 速度上界 (km/s)
-            30,    # 速度上界 (km/s)
-            5000,  # 压力上界 (GPa)
-            5000,  # 压力上界 (GPa)
-            1e5    # 温度上界 (K)
-        ]),
+        bounds=(lower_bounds, upper_bounds),
         ftol=1e-6,
         max_nfev=1000
     )
