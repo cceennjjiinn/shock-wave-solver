@@ -653,7 +653,22 @@ def solve_numerically(eqs, sym_vars, initial_guess):
     def residuals(x):
         """计算残差：方程组的误差"""
         substitutions = {var_list[i]: x[i] for i in range(len(x))}
-        return [float(abs(eq.subs(substitutions).evalf())) for eq in eqs]
+        residuals = []
+        for eq in eqs:
+            # 替换变量
+            substituted = eq.subs(substitutions)
+            # 检查是否为布尔值
+            if substituted == True:
+                residuals.append(0.0)  # 等式成立，残差为0
+            elif substituted == False:
+                residuals.append(1e10)  # 等式不成立，给予大残差
+            else:
+                # 正常计算数值残差
+                try:
+                    residuals.append(float(abs(substituted.evalf())))
+                except:
+                    residuals.append(1e10)  # 计算失败时给予大残差
+        return residuals
     
     # 根据初始猜测值的长度动态生成边界
     n_vars = len(initial_guess)
