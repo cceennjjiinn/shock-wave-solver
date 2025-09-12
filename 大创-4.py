@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error
-from sympy import symbols, Eq, solve
+from sympy import symbols, Eq, solve, simplify
 from scipy.optimize import least_squares
 from io import BytesIO, StringIO
 from PIL import Image
@@ -542,7 +542,7 @@ def calculate_error(params, param_errors):
         "Up_err": Up_err
     }
 
-# 输入函数 - 修复参数共享问题
+# 输入函数 - 修复参数共享问题，确保空白输入被正确识别为未知数
 def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", disabled=False):
     st.caption(f"{desc} | 单位: {unit}")
     input_type = st.radio(
@@ -551,14 +551,14 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", di
         key=f"{key}_type",
         horizontal=True,
         disabled=disabled,
-        help="选择输入方式: 单一值、多个离散值或连续范围"
+        help="选择输入方式: 单一值、多个离散值或连续范围。留空则作为未知数求解"
     )
     
     default_val = str(default) if default is not None else ""
     
     if input_type == "单一值":
         val = st.text_input(label, default_val, key=f"{key}_single", disabled=disabled)
-        if val == "":
+        if val.strip() == "":  # 空白输入被视为未知数
             return symbols(var_name)
         try:
             return [float(val)]
@@ -573,7 +573,7 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", di
             disabled=disabled,
             help="输入多个用逗号分隔的值 (例如: 1.5, 3.0, 4.5)"
         )
-        if val == "":
+        if val.strip() == "":  # 空白输入被视为未知数
             return symbols(var_name)
         try:
             # 处理可能的空格并分割
@@ -613,7 +613,7 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", di
                 help="增量值 (例如: 0.5 或 2.0, 默认 0.5)"
             )
             
-        if not start or not end:
+        if start.strip() == "" or end.strip() == "":  # 空白输入被视为未知数
             return symbols(var_name)
             
         try:
@@ -645,7 +645,7 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", di
             return None
     
 
-# 数值求解器（替代符号求解以提高速度）
+# 数值求解器（改进版本，更好地处理未知数）
 def solve_numerically(eqs, sym_vars, initial_guess):
     """使用数值方法求解方程组"""
     var_list = list(sym_vars.values())
@@ -665,7 +665,9 @@ def solve_numerically(eqs, sym_vars, initial_guess):
             else:
                 # 正常计算数值残差
                 try:
-                    residuals.append(float(abs(substituted.evalf())))
+                    # 简化表达式以提高计算稳定性
+                    simplified = simplify(substituted)
+                    residuals.append(float(abs(simplified.evalf())))
                 except:
                     residuals.append(1e10)  # 计算失败时给予大残差
         return residuals
@@ -699,8 +701,8 @@ def solve_numerically(eqs, sym_vars, initial_guess):
         residuals,
         list(initial_guess.values()),
         bounds=(lower_bounds, upper_bounds),
-        ftol=1e-6,
-        max_nfev=1000
+        ftol=1e-8,  # 提高精度
+        max_nfev=2000  # 增加迭代次数
     )
     
     if result.success:
@@ -925,6 +927,7 @@ def home_page():
     1. 基于Rankine-Hugoniot守恒方程组（质量、动量、能量守恒）
     2. 假设条件：平面冲击波、稳态传播、忽略初始压力
     3. 单位体系：密度(g/cm³)、速度(km/s)、压力(GPa)
+    4. 使用说明：参数留空将作为未知数求解，输入值则作为已知条件
     """)
     
     # 查看数据库快捷入口
@@ -949,6 +952,7 @@ def database_mode_page():
     st.session_state.previous_page = "database_mode"
     st.title("数据库模式")
     st.write("从数据库加载材料数据，基于Hugoniot关系拟合参数并求解")
+    st.success("提示：参数留空将作为未知数，由系统根据物理规律自动求解")
     
     # 添加温度计算选项
     calculate_temp = st.checkbox("进行温度相关计算", value=True, 
@@ -1422,6 +1426,7 @@ def manual_mode_page():
     st.session_state.previous_page = "manual_mode"
     st.title("手动输入模式")
     st.write("通过手动输入参数进行求解，适用于没有数据库数据的场景")
+    st.success("提示：参数留空将作为未知数，由系统根据物理规律自动求解")
     
     # 添加温度计算选项
     calculate_temp = st.checkbox("进行温度相关计算", value=True, 
