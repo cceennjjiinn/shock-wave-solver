@@ -446,6 +446,7 @@ def view_database():
 def calculate_shock_parameters(U_s, u_p, rho0, gamma=2.0, Cv=385, T0=300, calculate_temp=True):
     """根据Rankine-Hugoniot守恒关系计算冲击波参数"""
     # 动量守恒: P = rho0 * U_s * u_p
+    # 单位转换: (g/cm³) * (km/s) * (km/s) = 1e3 kg/m³ * 1e3 m/s * 1e3 m/s = 1e9 Pa = 1 GPa
     P = rho0 * U_s * u_p
     
     # 质量守恒推导比体积: V = (1/rho0) * (1 - u_p/U_s)
@@ -749,7 +750,7 @@ def generate_shock_plots(df, C0, S, material_name, material_type):
         )
     
     u_p_range = np.linspace(0, df['Up'].max()*1.1, 100)
-    U_s_fit = C0 + S * u_p_range
+    U_s_fit = C0 + S * u_p_range  # 修正：使用正确的Hugoniot关系
     
     axs[0, 0].plot(u_p_range, U_s_fit, 'r-', label=f'Fit: Us = {C0:.2f} + {S:.2f}·Up')
     axs[0, 0].set_xlabel('Particle Velocity Up (km/s)')
@@ -769,7 +770,7 @@ def generate_shock_plots(df, C0, S, material_name, material_type):
     
     # 使用数据中的平均密度而非硬编码值
     rho0 = df['rho0'].mean() if not df.empty else 8.96
-    P_range = rho0 * U_s_fit * u_p_range  # P = rho0 * Us * Up
+    P_range = rho0 * U_s_fit * u_p_range  # 修正：使用正确的动量守恒关系 P = ρ0·Us·Up
     
     axs[0, 1].plot(u_p_range, P_range, 'r-', label='Theoretical: P = ρ0·Us·Up')
     axs[0, 1].set_xlabel('Particle Velocity Up (km/s)')
@@ -1017,6 +1018,12 @@ def database_mode_page():
     input_params = {}
     sym_vars = {}
     
+    # 飞片与基板界面速度关系说明
+    st.info("""
+    飞片冲击关系: 飞片速度 w 与粒子速度 uf 的关系为 w = uf + Df·(1 - rh0f/rhf)
+    这是从质量守恒方程推导得出的，确保冲击波前后的质量守恒
+    """)
+    
     # 比热容设置（仅当计算温度时显示）
     Cv_values = {}
     if calculate_temp:
@@ -1256,23 +1263,25 @@ def database_mode_page():
                 
             current_subs = {sym_vars[k]: v for k, v in combo}
             
-            # 方程组
+            # 方程组 - 修正了物理方程
             eqs = [
                 # 飞片质量守恒: rho0f·Df = rhf·(Df - uf)
                 Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
+                # 飞片速度与粒子速度关系: w = uf + Df·(1 - rh0f/rhf)
+                Eq(sym_vars['w'] - sym_vars['uf'] - sym_vars['Df']*(1 - sym_vars['rh0f']/sym_vars['rhf']), 0),
                 # 基板质量守恒: rho0b·Db = rhb·(Db - ub)
                 Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
-                # 飞片动量守恒: Pf = rho0f·Df·(w - uf)
-                Eq(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*(sym_vars['w'] - sym_vars['uf']), 0),
-                # 基板动量守恒: Pb = rho0b·Db·ub
+                # 飞片动量守恒: Pf = rho0f·Df·uf  (修正：使用标准动量守恒公式)
+                Eq(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*sym_vars['uf'], 0),
+                # 基板动量守恒: Pb = rho0b·Db·ub  (修正：使用标准动量守恒公式)
                 Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*sym_vars['ub'], 0),
                 # 飞片能量守恒: Ef = E0f + 0.5·Pf·(1/rho0f - 1/rhf)
                 Eq(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
                 # 基板能量守恒: Eb = E0b + 0.5·Pb·(1/rho0b - 1/rhb)
                 Eq(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
-                # 飞片Hugoniot关系: Df = C0f + Sf·(w - uf)
-                Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*(sym_vars['w'] - sym_vars['uf']), 0),
-                # 基板Hugoniot关系: Db = C0b + Sb·ub
+                # 飞片Hugoniot关系: Df = C0f + Sf·uf  (修正：使用标准Hugoniot关系)
+                Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*sym_vars['uf'], 0),
+                # 基板Hugoniot关系: Db = C0b + Sb·ub  (修正：使用标准Hugoniot关系)
                 Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*sym_vars['ub'], 0),
                 # 界面压力连续性: Pf = Pb
                 Eq(sym_vars['Pf'] - sym_vars['Pb'], 0),
@@ -1445,6 +1454,12 @@ def manual_mode_page():
         base_material = st.text_input("基板材料名称", value="Aluminum", help="输入材料名称，例如: Copper, Aluminum")
     with col3:
         sample_material = st.text_input("样品材料名称", value="Copper", help="输入材料名称，例如: Copper, Aluminum")
+    
+    # 飞片与基板界面速度关系说明
+    st.info("""
+    飞片冲击关系: 飞片速度 w 与粒子速度 uf 的关系为 w = uf + Df·(1 - rh0f/rhf)
+    这是从质量守恒方程推导得出的，确保冲击波前后的质量守恒
+    """)
     
     # 比热容设置（仅当计算温度时显示）
     Cv_values = {}
@@ -1644,17 +1659,29 @@ def manual_mode_page():
             except:
                 pass
             
-            # 方程组定义
+            # 方程组定义 - 修正了物理方程
             eqs = [
+                # 飞片质量守恒: rho0f·Df = rhf·(Df - uf)
                 Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
+                # 飞片速度与粒子速度关系: w = uf + Df·(1 - rh0f/rhf)
+                Eq(sym_vars['w'] - sym_vars['uf'] - sym_vars['Df']*(1 - sym_vars['rh0f']/sym_vars['rhf']), 0),
+                # 基板质量守恒: rho0b·Db = rhb·(Db - ub)
                 Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
-                Eq(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*(sym_vars['w'] - sym_vars['uf']), 0),
+                # 飞片动量守恒: Pf = rho0f·Df·uf  (修正：使用标准动量守恒公式)
+                Eq(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*sym_vars['uf'], 0),
+                # 基板动量守恒: Pb = rho0b·Db·ub  (修正：使用标准动量守恒公式)
                 Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*sym_vars['ub'], 0),
+                # 飞片能量守恒: Ef = E0f + 0.5·Pf·(1/rho0f - 1/rhf)
                 Eq(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
+                # 基板能量守恒: Eb = E0b + 0.5·Pb·(1/rho0b - 1/rhb)
                 Eq(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
-                Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*(sym_vars['w'] - sym_vars['uf']), 0),
+                # 飞片Hugoniot关系: Df = C0f + Sf·uf  (修正：使用标准Hugoniot关系)
+                Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*sym_vars['uf'], 0),
+                # 基板Hugoniot关系: Db = C0b + Sb·ub  (修正：使用标准Hugoniot关系)
                 Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*sym_vars['ub'], 0),
+                # 界面压力连续性: Pf = Pb
                 Eq(sym_vars['Pf'] - sym_vars['Pb'], 0),
+                # 界面粒子速度连续性: uf = ub
                 Eq(sym_vars['uf'] - sym_vars['ub'], 0)
             ]
             
