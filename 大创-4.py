@@ -927,7 +927,7 @@ def home_page():
     1. 基于Rankine-Hugoniot守恒方程组（质量、动量、能量守恒）
     2. 假设条件：平面冲击波、稳态传播、忽略初始压力
     3. 单位体系：密度(g/cm³)、速度(km/s)、压力(GPa)
-    4. 使用说明：参数留空将作为未知数求解，输入值则作为已知条件
+    4. 使用说明：仅飞片初始冲击速度(w)可设为变化值，其他参数为单一值
     """)
     
     # 查看数据库快捷入口
@@ -952,7 +952,7 @@ def database_mode_page():
     st.session_state.previous_page = "database_mode"
     st.title("数据库模式")
     st.write("从数据库加载材料数据，基于Hugoniot关系拟合参数并求解")
-    st.success("提示：参数留空将作为未知数，由系统根据物理规律自动求解")
+    st.success("提示：仅飞片初始冲击速度(w)可设为变化值（单一值/多个值/范围），其他参数只能输入单一值")
     
     # 添加温度计算选项
     calculate_temp = st.checkbox("进行温度相关计算", value=True, 
@@ -1087,18 +1087,23 @@ def database_mode_page():
                             default_val = 2.0
                     else:
                         default_val = 2.0  # 默认格吕奈森系数
+                
+                # 只有飞片初始冲击速度(w)可以变化，其他参数只能是单一值
+                disabled = var != "w"
+                
                 val = get_input_streamlit(
                     label=var,
                     var_name=var,
                     key=f"f_{var}",
                     default=default_val,
                     unit=var_units[var],
-                    desc=var_descs[var]
+                    desc=var_descs[var],
+                    disabled=disabled
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
     
-    # 基板参数 - 所有参数都需要独立输入
+    # 基板参数 - 所有参数都只能是单一值
     with st.expander(f"{base_material} 基板参数", expanded=True):
         cols = st.columns(3)
         for i, var in enumerate(variables["b"]):
@@ -1146,12 +1151,13 @@ def database_mode_page():
                          "基板粒子速度" if var == "ub" else
                          "基板冲击压力" if var == "Pb" else
                          "基板格吕奈森系数" if var == "gammab" else
-                         "基板冲击温度"
+                         "基板冲击温度",
+                    disabled=True  # 基板参数只能是单一值
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
     
-    # 样品参数 - 所有参数都需要独立输入
+    # 样品参数 - 所有参数都只能是单一值
     with st.expander(f"{sample_material} 样品参数", expanded=True):
         cols = st.columns(3)
         for i, var in enumerate(variables["s"]):
@@ -1199,7 +1205,8 @@ def database_mode_page():
                          "样品粒子速度" if var == "us" else
                          "样品冲击压力" if var == "Ps" else
                          "样品格吕奈森系数" if var == "gammas" else
-                         "样品冲击温度"
+                         "样品冲击温度",
+                    disabled=True  # 样品参数只能是单一值
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
@@ -1212,7 +1219,7 @@ def database_mode_page():
             if count > 0:
                 st.success(f"已保存到 {sample_material} 数据集，共 {count} 条记录")
     
-    # 参数组合限制
+    # 参数组合限制（只考虑飞片初始冲击速度w的变化）
     range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
     total_combinations = 1
     for v in range_params.values():
@@ -1426,7 +1433,7 @@ def manual_mode_page():
     st.session_state.previous_page = "manual_mode"
     st.title("手动输入模式")
     st.write("通过手动输入参数进行求解，适用于没有数据库数据的场景")
-    st.success("提示：参数留空将作为未知数，由系统根据物理规律自动求解")
+    st.success("提示：仅飞片初始冲击速度(w)可设为变化值（单一值/多个值/范围），其他参数只能输入单一值")
     
     # 添加温度计算选项
     calculate_temp = st.checkbox("进行温度相关计算", value=True, 
@@ -1483,6 +1490,10 @@ def manual_mode_page():
                 
             with cols[i % 3]:
                 default_val = 2.0 if var == "gammaf" else None
+                
+                # 只有飞片初始冲击速度(w)可以变化，其他参数只能是单一值
+                disabled = var != "w"
+                
                 val = get_input_streamlit(
                     label=var,
                     var_name=var,
@@ -1504,12 +1515,13 @@ def manual_mode_page():
                          "飞片初始冲击速度" if var == "w" else
                          "飞片冲击压力" if var == "Pf" else
                          "飞片格吕奈森系数" if var == "gammaf" else
-                         "飞片冲击温度"
+                         "飞片冲击温度",
+                    disabled=disabled
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
     
-    # 基板参数输入 - 所有参数都需要独立输入
+    # 基板参数输入 - 所有参数都只能是单一值
     with st.expander(f"{base_material} 基板参数", expanded=True):
         cols = st.columns(3)
         for i, var in enumerate(variables["b"]):
@@ -1540,12 +1552,13 @@ def manual_mode_page():
                          "基板粒子速度" if var == "ub" else
                          "基板冲击压力" if var == "Pb" else
                          "基板格吕奈森系数" if var == "gammab" else
-                         "基板冲击温度"
+                         "基板冲击温度",
+                    disabled=True  # 基板参数只能是单一值
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
     
-    # 样品参数输入 - 所有参数都需要独立输入
+    # 样品参数输入 - 所有参数都只能是单一值
     with st.expander(f"{sample_material} 样品参数", expanded=True):
         cols = st.columns(3)
         for i, var in enumerate(variables["s"]):
@@ -1576,7 +1589,8 @@ def manual_mode_page():
                          "样品粒子速度" if var == "us" else
                          "样品冲击压力" if var == "Ps" else
                          "样品格吕奈森系数" if var == "gammas" else
-                         "样品冲击温度"
+                         "样品冲击温度",
+                    disabled=True  # 样品参数只能是单一值
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
@@ -1589,7 +1603,7 @@ def manual_mode_page():
             if count > 0:
                 st.success(f"已保存到 {sample_material} 数据集，共 {count} 条记录")
     
-    # 参数组合限制
+    # 参数组合限制（只考虑飞片初始冲击速度w的变化）
     range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
     total_combinations = 1
     for v in range_params.values():
