@@ -703,7 +703,7 @@ def solve_numerically(eqs, sym_vars, initial_guess):
         list(initial_guess.values()),
         bounds=(lower_bounds, upper_bounds),
         ftol=1e-8,  # 提高精度
-        max_nfev=2000  # 增加迭代次数
+        max_nfev=5000  # 增加迭代次数以提高收敛性
     )
     
     if result.success:
@@ -1018,10 +1018,10 @@ def database_mode_page():
     input_params = {}
     sym_vars = {}
     
-    # 飞片与基板界面速度关系说明
+    # 飞片与基板界面速度关系说明 - 更新为正确的物理关系
     st.info("""
-    飞片冲击关系: 飞片速度 w 与粒子速度 uf 的关系为 w = uf + Df·(1 - rh0f/rhf)
-    这是从质量守恒方程推导得出的，确保冲击波前后的质量守恒
+    飞片冲击关系: 飞片速度 w 与粒子速度 uf 的关系为 w = Df + uf
+    这是从实验室坐标系下的运动学关系和质量守恒方程推导得出的
     """)
     
     # 比热容设置（仅当计算温度时显示）
@@ -1043,7 +1043,7 @@ def database_mode_page():
     with st.expander(f"{flyer_material} 飞片参数", expanded=True):
         cols = st.columns(3)
         var_descs = {
-            "rh0f": "初始密度",
+            "rh0f": "初始密度（必须输入）",
             "rhf": "压缩密度",
             "Df": "冲击波速度 (对应Us)",
             "C0f": "体声速 (Hugoniot拟合)",
@@ -1094,13 +1094,19 @@ def database_mode_page():
                             default_val = 2.0
                     else:
                         default_val = 2.0  # 默认格吕奈森系数
+                # 为初始密度设置默认值和更强的提示
+                if var == "rh0f" and default_val is None:
+                    default_val = 8.96  # 铜的默认密度
+                
                 val = get_input_streamlit(
                     label=var,
                     var_name=var,
                     key=f"f_{var}",
                     default=default_val,
                     unit=var_units[var],
-                    desc=var_descs[var]
+                    desc=var_descs[var],
+                    # 初始密度不允许留空，强制要求输入
+                    disabled=False
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
@@ -1143,7 +1149,7 @@ def database_mode_page():
                          "GPa·cm³/g" if var in ["E0b", "Eb"] else
                          "GPa" if var == "Pb" else 
                          "K" if var == "Tb" else "无量纲",
-                    desc="基板初始密度" if var == "rh0b" else
+                    desc="基板初始密度（必须输入）" if var == "rh0b" else
                          "基板压缩密度" if var == "rhb" else
                          "基板冲击波速度" if var == "Db" else
                          "基板体声速" if var == "C0b" else
@@ -1196,7 +1202,7 @@ def database_mode_page():
                          "GPa·cm³/g" if var in ["E0s", "Es"] else
                          "GPa" if var == "Ps" else
                          "K" if var == "Ts" else "无量纲",
-                    desc="样品初始密度" if var == "rh0s" else
+                    desc="样品初始密度（必须输入）" if var == "rh0s" else
                          "样品压缩密度" if var == "rhs" else
                          "样品冲击波速度" if var == "Ds" else
                          "样品体声速" if var == "C0s" else
@@ -1234,6 +1240,13 @@ def database_mode_page():
     
     if st.button("开始求解"):
         valid = True
+        # 检查关键参数是否已输入
+        for var in ['rh0f', 'rh0b', 'rh0s']:
+            if isinstance(input_params.get(var), symbols):
+                valid = False
+                st.error(f"{var}（初始密度）为必填参数，请输入值")
+        
+        # 检查其他参数输入有效性
         for var, val in input_params.items():
             if val is None:
                 valid = False
@@ -1263,12 +1276,12 @@ def database_mode_page():
                 
             current_subs = {sym_vars[k]: v for k, v in combo}
             
-            # 方程组 - 修正了物理方程
+            # 方程组 - 使用修正后的飞片速度方程
             eqs = [
                 # 飞片质量守恒: rho0f·Df = rhf·(Df - uf)
                 Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
-                # 飞片速度与粒子速度关系: w = uf + Df·(1 - rh0f/rhf)
-                Eq(sym_vars['w'] - sym_vars['uf'] - sym_vars['Df']*(1 - sym_vars['rh0f']/sym_vars['rhf']), 0),
+                # 修正：飞片速度与粒子速度关系 (实验室坐标系): w = Df + uf
+                Eq(sym_vars['w'] - (sym_vars['Df'] + sym_vars['uf']), 0),
                 # 基板质量守恒: rho0b·Db = rhb·(Db - ub)
                 Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
                 # 飞片动量守恒: Pf = rho0f·Df·uf  (修正：使用标准动量守恒公式)
@@ -1357,16 +1370,42 @@ def database_mode_page():
                 continue
                 
             try:
-                # 构建初始猜测值（基于物理合理范围）
+                # 构建初始猜测值（基于物理合理范围和已知参数）
                 initial_guess = {}
+                # 提取已知参数值用于更智能的初始猜测
+                known_params = {}
+                for k, v in current_subs.items():
+                    try:
+                        known_params[str(k)] = float(v)
+                    except:
+                        pass
+                
                 for var in remaining_vars:
                     var_str = str(var)
-                    if var_str.startswith(('rh0', 'rh')):  # 密度
-                        initial_guess[var] = 8.0
-                    elif var_str.startswith(('D', 'C0', 'u', 'w')):  # 速度
-                        initial_guess[var] = 5.0
-                    elif var_str.startswith(('P', 'E')):  # 压力/能量
-                        initial_guess[var] = 100.0
+                    # 基于已知参数动态设置初始猜测值
+                    if var_str == 'w' and 'Df' in known_params and 'uf' in known_params:
+                        initial_guess[var] = known_params['Df'] + known_params['uf']
+                    elif var_str == 'Df' and 'w' in known_params and 'uf' in known_params:
+                        initial_guess[var] = known_params['w'] - known_params['uf']
+                    elif var_str == 'uf' and 'w' in known_params and 'Df' in known_params:
+                        initial_guess[var] = known_params['w'] - known_params['Df']
+                    elif var_str == 'Pf' and 'rh0f' in known_params and 'Df' in known_params and 'uf' in known_params:
+                        initial_guess[var] = known_params['rh0f'] * known_params['Df'] * known_params['uf']
+                    elif var_str.startswith(('rh0', 'rh')):  # 密度
+                        initial_guess[var] = known_params.get('rh0f', 8.0)  # 使用已知密度作为参考
+                    elif var_str.startswith(('D', 'C0', 'u')):  # 速度
+                        if 'w' in known_params:
+                            initial_guess[var] = known_params['w'] / 2  # 基于飞片速度估算
+                        else:
+                            initial_guess[var] = 5.0
+                    elif var_str == 'w':  # 飞片速度
+                        initial_guess[var] = 10.0
+                    elif var_str.startswith('P'):  # 压力
+                        if 'rh0f' in known_params and 'w' in known_params:
+                            # 基于飞片速度估算压力
+                            initial_guess[var] = known_params['rh0f'] * (known_params['w']/2) * (known_params['w']/2)
+                        else:
+                            initial_guess[var] = 100.0
                     elif var_str.startswith('gamma'):  # 格吕奈森系数
                         initial_guess[var] = 2.0
                     elif var_str.startswith('T'):  # 温度
@@ -1455,10 +1494,10 @@ def manual_mode_page():
     with col3:
         sample_material = st.text_input("样品材料名称", value="Copper", help="输入材料名称，例如: Copper, Aluminum")
     
-    # 飞片与基板界面速度关系说明
+    # 飞片与基板界面速度关系说明 - 更新为正确的物理关系
     st.info("""
-    飞片冲击关系: 飞片速度 w 与粒子速度 uf 的关系为 w = uf + Df·(1 - rh0f/rhf)
-    这是从质量守恒方程推导得出的，确保冲击波前后的质量守恒
+    飞片冲击关系: 飞片速度 w 与粒子速度 uf 的关系为 w = Df + uf
+    这是从实验室坐标系下的运动学关系和质量守恒方程推导得出的
     """)
     
     # 比热容设置（仅当计算温度时显示）
@@ -1498,6 +1537,10 @@ def manual_mode_page():
                 
             with cols[i % 3]:
                 default_val = 2.0 if var == "gammaf" else None
+                # 为初始密度设置默认值
+                if var == "rh0f":
+                    default_val = 8.96  # 铜的默认密度
+                
                 val = get_input_streamlit(
                     label=var,
                     var_name=var,
@@ -1508,7 +1551,7 @@ def manual_mode_page():
                          "GPa·cm³/g" if var in ["E0f", "Ef"] else
                          "GPa" if var == "Pf" else
                          "K" if var == "Tf" else "无量纲",
-                    desc="飞片初始密度" if var == "rh0f" else
+                    desc="飞片初始密度（必须输入）" if var == "rh0f" else
                          "飞片压缩密度" if var == "rhf" else
                          "飞片冲击波速度" if var == "Df" else
                          "飞片体声速" if var == "C0f" else
@@ -1534,6 +1577,9 @@ def manual_mode_page():
                 
             with cols[i % 3]:
                 default_val = 2.0 if var == "gammab" else None
+                # 为初始密度设置默认值
+                if var == "rh0b":
+                    default_val = 2.7  # 铝的默认密度
                 
                 val = get_input_streamlit(
                     label=var,
@@ -1545,7 +1591,7 @@ def manual_mode_page():
                          "GPa·cm³/g" if var in ["E0b", "Eb"] else
                          "GPa" if var == "Pb" else
                          "K" if var == "Tb" else "无量纲",
-                    desc="基板初始密度" if var == "rh0b" else
+                    desc="基板初始密度（必须输入）" if var == "rh0b" else
                          "基板压缩密度" if var == "rhb" else
                          "基板冲击波速度" if var == "Db" else
                          "基板体声速" if var == "C0b" else
@@ -1570,6 +1616,9 @@ def manual_mode_page():
                 
             with cols[i % 3]:
                 default_val = 2.0 if var == "gammas" else None
+                # 为初始密度设置默认值
+                if var == "rh0s":
+                    default_val = 8.96  # 铜的默认密度
                 
                 val = get_input_streamlit(
                     label=var,
@@ -1581,7 +1630,7 @@ def manual_mode_page():
                          "GPa·cm³/g" if var in ["E0s", "Es"] else
                          "GPa" if var == "Ps" else
                          "K" if var == "Ts" else "无量纲",
-                    desc="样品初始密度" if var == "rh0s" else
+                    desc="样品初始密度（必须输入）" if var == "rh0s" else
                          "样品压缩密度" if var == "rhs" else
                          "样品冲击波速度" if var == "Ds" else
                          "样品体声速" if var == "C0s" else
@@ -1619,6 +1668,13 @@ def manual_mode_page():
     
     if st.button("开始求解方程组"):
         valid = True
+        # 检查关键参数是否已输入
+        for var in ['rh0f', 'rh0b', 'rh0s']:
+            if isinstance(input_params.get(var), symbols):
+                valid = False
+                st.error(f"{var}（初始密度）为必填参数，请输入值")
+        
+        # 检查其他参数输入有效性
         for var, val in input_params.items():
             if val is None:
                 valid = False
@@ -1659,12 +1715,12 @@ def manual_mode_page():
             except:
                 pass
             
-            # 方程组定义 - 修正了物理方程
+            # 方程组定义 - 使用修正后的飞片速度方程
             eqs = [
                 # 飞片质量守恒: rho0f·Df = rhf·(Df - uf)
                 Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
-                # 飞片速度与粒子速度关系: w = uf + Df·(1 - rh0f/rhf)
-                Eq(sym_vars['w'] - sym_vars['uf'] - sym_vars['Df']*(1 - sym_vars['rh0f']/sym_vars['rhf']), 0),
+                # 修正：飞片速度与粒子速度关系 (实验室坐标系): w = Df + uf
+                Eq(sym_vars['w'] - (sym_vars['Df'] + sym_vars['uf']), 0),
                 # 基板质量守恒: rho0b·Db = rhb·(Db - ub)
                 Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
                 # 飞片动量守恒: Pf = rho0f·Df·uf  (修正：使用标准动量守恒公式)
@@ -1750,21 +1806,47 @@ def manual_mode_page():
                 continue
                 
             try:
-                # 构建初始猜测值
+                # 构建初始猜测值（基于物理合理范围和已知参数）
                 initial_guess = {}
+                # 提取已知参数值用于更智能的初始猜测
+                known_params = {}
+                for k, v in current_subs.items():
+                    try:
+                        known_params[str(k)] = float(v)
+                    except:
+                        pass
+                
                 for var in remaining_vars:
                     var_str = str(var)
-                    if var_str.startswith(('rh0', 'rh')):
-                        initial_guess[var] = 8.0
-                    elif var_str.startswith(('D', 'C0', 'u', 'w')):
-                        initial_guess[var] = 5.0
-                    elif var_str.startswith(('P', 'E')):
-                        initial_guess[var] = 100.0
-                    elif var_str.startswith('gamma'):
+                    # 基于已知参数动态设置初始猜测值
+                    if var_str == 'w' and 'Df' in known_params and 'uf' in known_params:
+                        initial_guess[var] = known_params['Df'] + known_params['uf']
+                    elif var_str == 'Df' and 'w' in known_params and 'uf' in known_params:
+                        initial_guess[var] = known_params['w'] - known_params['uf']
+                    elif var_str == 'uf' and 'w' in known_params and 'Df' in known_params:
+                        initial_guess[var] = known_params['w'] - known_params['Df']
+                    elif var_str == 'Pf' and 'rh0f' in known_params and 'Df' in known_params and 'uf' in known_params:
+                        initial_guess[var] = known_params['rh0f'] * known_params['Df'] * known_params['uf']
+                    elif var_str.startswith(('rh0', 'rh')):  # 密度
+                        initial_guess[var] = known_params.get('rh0f', 8.0)  # 使用已知密度作为参考
+                    elif var_str.startswith(('D', 'C0', 'u')):  # 速度
+                        if 'w' in known_params:
+                            initial_guess[var] = known_params['w'] / 2  # 基于飞片速度估算
+                        else:
+                            initial_guess[var] = 5.0
+                    elif var_str == 'w':  # 飞片速度
+                        initial_guess[var] = 10.0
+                    elif var_str.startswith('P'):  # 压力
+                        if 'rh0f' in known_params and 'w' in known_params:
+                            # 基于飞片速度估算压力
+                            initial_guess[var] = known_params['rh0f'] * (known_params['w']/2) * (known_params['w']/2)
+                        else:
+                            initial_guess[var] = 100.0
+                    elif var_str.startswith('gamma'):  # 格吕奈森系数
                         initial_guess[var] = 2.0
-                    elif var_str.startswith('T'):
+                    elif var_str.startswith('T'):  # 温度
                         initial_guess[var] = 3000.0
-                    else:
+                    else:  # 其他参数
                         initial_guess[var] = 1.0
                 
                 # 数值求解
