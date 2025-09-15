@@ -226,7 +226,7 @@ def save_results_to_db(results, material_name="Copper"):
                 count += 1
         
         if invalid_count > 0:
-            st.warning(f"有 {invalid_count} 条记录不符合物理规律，未保存到数据库")
+            st.warning(f"过滤了 {invalid_count} 个不合理解，未保存到数据库")
         return count
     except Exception as e:
         st.error(f"保存失败: {str(e)}")
@@ -379,7 +379,7 @@ def bulk_import_data(df, material_name, exp_method="bulk_import"):
                 count += 1
         
         if invalid_count > 0:
-            st.warning(f"有 {invalid_count} 条记录不符合物理规律，未导入数据库")
+            st.warning(f"过滤了 {invalid_count} 个不合理解，未导入数据库")
         return count
     except Exception as e:
         st.error(f"批量导入失败: {str(e)}")
@@ -446,7 +446,7 @@ def view_database():
                         # 导入数据
                         count = bulk_import_data(df, new_material, exp_method)
                         if count > 0:
-                            st.success(f"成功导入 {count} 条记录（跳过包含空值和不符合物理规律的行）")
+                            st.success(f"成功导入 {count} 条记录（已过滤不符合物理规律的行）")
                             st.rerun()
                         else:
                             st.warning("没有导入任何记录，请检查数据格式和物理合理性")
@@ -1975,41 +1975,44 @@ def manual_mode_page():
             # 检查物理合理性
             try:
                 # 检查飞片参数物理合理性
-                if 'rh0f' in current_subs and isinstance(current_subs['rh0f'], (int, float)):
-                    if current_subs['rh0f'] <= 0 or current_subs['rh0f'] > 20:
-                        st.warning(f"飞片初始密度 {current_subs['rh0f']} g/cm³ 超出物理合理范围 (0-20 g/cm³)")
+                if 'rh0f' in current_subs and 'Df' in current_subs and 'uf' in current_subs:
+                    rh0f_val = float(current_subs['rh0f'])
+                    Df_val = float(current_subs['Df'])
+                    uf_val = float(current_subs['uf'])
+                    
+                    if rh0f_val <= 0:
+                        st.warning("飞片初始密度必须为正数")
+                        continue
+                    if Df_val <= uf_val:
+                        st.warning(f"飞片冲击波速度(Df={Df_val})必须大于粒子速度(uf={uf_val})")
+                        continue
                 
-                if 'Df' in current_subs and 'uf' in current_subs and \
-                   isinstance(current_subs['Df'], (int, float)) and isinstance(current_subs['uf'], (int, float)):
-                    if current_subs['Df'] <= current_subs['uf']:
-                        st.warning(f"飞片冲击波速度 {current_subs['Df']} km/s 必须大于粒子速度 {current_subs['uf']} km/s")
-
-                # 方程组 - 使用修正后的飞片速度方程
+                # 方程组定义 - 使用修正后的飞片速度方程
                 eqs = [
                     # 飞片质量守恒: rho0f·Df = rhf·(Df - uf)
                     Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
-                    # 修正：飞片速度与粒子速度关系 (实验室坐标系): w = Df + uf
+                    # 飞片速度与粒子速度关系 (实验室坐标系): w = Df + uf
                     Eq(sym_vars['w'] - (sym_vars['Df'] + sym_vars['uf']), 0),
                     # 基板质量守恒: rho0b·Db = rhb·(Db - ub)
                     Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
-                    # 飞片动量守恒: Pf = rho0f·Df·uf  (修正：使用标准动量守恒公式)
+                    # 飞片动量守恒: Pf = rho0f·Df·uf
                     Eq(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*sym_vars['uf'], 0),
-                    # 基板动量守恒: Pb = rho0b·Db·ub  (修正：使用标准动量守恒公式)
+                    # 基板动量守恒: Pb = rho0b·Db·ub
                     Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*sym_vars['ub'], 0),
                     # 飞片能量守恒: Ef = E0f + 0.5·Pf·(1/rho0f - 1/rhf)
                     Eq(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
                     # 基板能量守恒: Eb = E0b + 0.5·Pb·(1/rho0b - 1/rhb)
                     Eq(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
-                    # 飞片Hugoniot关系: Df = C0f + Sf·uf  (修正：使用标准Hugoniot关系)
+                    # 飞片Hugoniot关系: Df = C0f + Sf·uf
                     Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*sym_vars['uf'], 0),
-                    # 基板Hugoniot关系: Db = C0b + Sb·ub  (修正：使用标准Hugoniot关系)
+                    # 基板Hugoniot关系: Db = C0b + Sb·ub
                     Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*sym_vars['ub'], 0),
                     # 界面压力连续性: Pf = Pb
                     Eq(sym_vars['Pf'] - sym_vars['Pb'], 0),
                     # 界面粒子速度连续性: uf = ub
                     Eq(sym_vars['uf'] - sym_vars['ub'], 0)
                 ]
-
+                
                 # 温度相关方程（仅当计算温度时添加）
                 if calculate_temp:
                     # 飞片温度方程 (Mie-Grüneisen)
@@ -2018,19 +2021,11 @@ def manual_mode_page():
                     # 基板温度方程
                     eqs.append(Eq(sym_vars['Tb'] - 300 - (sym_vars['Eb'] - sym_vars['E0b'])*1e6 / 
                                  (Cv_values['b'] * (1 + sym_vars['gammab']/2)), 0))
-
-                try:
-                    # 检查样品和基板是否为同一材料
-                    cond = all([
-                        current_subs.get(sym_vars['rh0s'], sym_vars['rh0s']) == current_subs.get(sym_vars['rh0b'], sym_vars['rh0b']),
-                        current_subs.get(sym_vars['C0b'], sym_vars['C0b']) == current_subs.get(sym_vars['C0s'], sym_vars['C0s']),
-                        current_subs.get(sym_vars['Sb'], sym_vars['Sb']) == current_subs.get(sym_vars['Ss'], sym_vars['Ss']),
-                        current_subs.get(sym_vars['E0b'], sym_vars['E0b']) == current_subs.get(sym_vars['E0s'], sym_vars['E0s'])
-                    ])
-                except TypeError:
-                    cond = False
-
-                if cond:
+                
+                # 判断样品与基板是否为同一材料
+                is_same_material = flyer_material.lower() == sample_material.lower()
+                
+                if is_same_material:
                     # 样品与基板为同一材料：参数与基板一致
                     eqs += [
                         Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),  # 压力连续性
@@ -2040,7 +2035,7 @@ def manual_mode_page():
                         # 样品能量守恒
                         Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0)
                     ]
-
+                    
                     # 温度相关方程（仅当计算温度时添加）
                     if calculate_temp:
                         eqs += [
@@ -2065,20 +2060,21 @@ def manual_mode_page():
                         Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),  # 压力连续性
                         Eq(sym_vars['ub'] - sym_vars['us'], 0)   # 速度连续性
                     ]
-
+                    
                     # 温度相关方程（仅当计算温度时添加）
                     if calculate_temp:
                         eqs.append(Eq(sym_vars['Ts'] - 300 - (sym_vars['Es'] - sym_vars['E0s'])*1e6 / 
                                      (Cv_values['s'] * (1 + sym_vars['gammas']/2)), 0))
-
+                
+                # 代入已知参数
                 substituted_eqs = [eq.subs(current_subs) for eq in eqs]
                 remaining_vars = list(set().union(*[eq.free_symbols for eq in substituted_eqs]))
-
+                
                 if not remaining_vars:
                     continue
-
+                    
                 try:
-                    # 构建初始猜测值（基于物理合理范围和已知参数）
+                    # 构建初始猜测值（基于物理合理范围）
                     initial_guess = {}
                     # 提取已知参数值用于更智能的初始猜测
                     known_params = {}
@@ -2087,7 +2083,7 @@ def manual_mode_page():
                             known_params[str(k)] = float(v)
                         except:
                             pass
-
+                    
                     for var in remaining_vars:
                         var_str = str(var)
                         # 基于已知参数动态设置初始猜测值
@@ -2100,17 +2096,16 @@ def manual_mode_page():
                         elif var_str == 'Pf' and 'rh0f' in known_params and 'Df' in known_params and 'uf' in known_params:
                             initial_guess[var] = known_params['rh0f'] * known_params['Df'] * known_params['uf']
                         elif var_str.startswith(('rh0', 'rh')):  # 密度
-                            initial_guess[var] = known_params.get('rh0f', 8.0)  # 使用已知密度作为参考
+                            initial_guess[var] = known_params.get('rh0f', 8.0)
                         elif var_str.startswith(('D', 'C0', 'u')):  # 速度
                             if 'w' in known_params:
-                                initial_guess[var] = known_params['w'] / 2  # 基于飞片速度估算
+                                initial_guess[var] = known_params['w'] / 2
                             else:
                                 initial_guess[var] = 5.0
                         elif var_str == 'w':  # 飞片速度
                             initial_guess[var] = 10.0
                         elif var_str.startswith('P'):  # 压力
                             if 'rh0f' in known_params and 'w' in known_params:
-                                # 基于飞片速度估算压力
                                 initial_guess[var] = known_params['rh0f'] * (known_params['w']/2) * (known_params['w']/2)
                             else:
                                 initial_guess[var] = 100.0
@@ -2120,10 +2115,10 @@ def manual_mode_page():
                             initial_guess[var] = 3000.0
                         else:  # 其他参数
                             initial_guess[var] = 1.0
-
+                    
                     # 使用数值方法求解
                     solution = solve_numerically(substituted_eqs, {v:v for v in remaining_vars}, initial_guess)
-
+                    
                     if solution:
                         record = solution.copy()
                         # 添加已知参数
@@ -2139,53 +2134,61 @@ def manual_mode_page():
                     else:
                         invalid_solutions += 1
                 except Exception as e:
-                    st.warning(f"求解错误: {str(e)} (可能由高压下的非线性效应引起，请检查参数范围)")
+                    st.warning(f"求解错误: {str(e)} (可能由参数范围不合理引起)")
                     invalid_solutions += 1
-
-            except Exception as e:
-                st.error(f"参数检查错误: {str(e)}")
-                invalid_solutions += 1
-
-        if results:
-            st.success(f"求解完成，找到 {len(results)} 个符合物理规律的解（过滤了 {invalid_solutions} 个不合理解）")
-
-            st.subheader("结果数据 (单位: rho=g/cm³, D=km/s, u=km/s, P=GPa, T=K)")
-            df = pd.DataFrame(results)
-            st.dataframe(df)
-
-            csv = df.to_csv(index=False)
-            st.download_button(
-                label="下载结果数据",
-                data=csv,
-                file_name="manual_solver_results.csv",
-                mime="text/csv",
-            )
-
-            st.subheader("结果可视化")
-            fig = plot_results_streamlit(results, calculate_temp)
-            if fig:
-                st.pyplot(fig)
-                buf2 = BytesIO()
-                fig.savefig(buf2, format='png', dpi=150, bbox_inches='tight')
-                buf2.seek(0)
+            
+            if results:
+                st.success(f"求解完成，找到 {len(results)} 个符合物理规律的解（过滤了 {invalid_solutions} 个不合理解）")
+                
+                st.subheader("结果数据 (单位: rho=g/cm³, D=km/s, u=km/s, P=GPa, T=K)")
+                df = pd.DataFrame(results)
+                # 选择常用列显示
+                display_cols = ['rh0f', 'Df', 'uf', 'Pf', 'rhf', 'w', 
+                               'rh0b', 'Db', 'ub', 'Pb', 'rhb']
+                if calculate_temp:
+                    display_cols.extend(['Tf', 'Tb'])
+                # 只显示存在的列
+                display_cols = [col for col in display_cols if col in df.columns]
+                st.dataframe(df[display_cols])
+                
+                # 提供下载功能
+                csv = df.to_csv(index=False)
                 st.download_button(
-                    label="下载图表",
-                    data=buf2,
-                    file_name="manual_analysis_with_temp.png" if calculate_temp else "manual_analysis_results.png",
-                    mime="image/png"
+                    label="下载结果数据",
+                    data=csv,
+                    file_name="manual_mode_results.csv",
+                    mime="text/csv",
                 )
-
-            if st.button("保存结果到数据库"):
-                count = save_results_to_db(results, sample_material)
-                if count > 0:
-                    st.success(f"已保存到 {sample_material} 数据集，共 {count} 条记录")
-
+                
+                # 结果可视化
+                st.subheader("结果可视化")
+                fig = plot_results_streamlit(results, calculate_temp)
+                if fig:
+                    st.pyplot(fig)
+                    buf = BytesIO()
+                    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+                    buf.seek(0)
+                    st.download_button(
+                        label="下载图表",
+                        data=buf,
+                        file_name="manual_mode_analysis.png",
+                        mime="image/png"
+                    )
+                
+                # 保存结果到数据库
+                if st.button("保存结果到数据库"):
+                    count = save_results_to_db(results, sample_material)
+                    if count > 0:
+                        st.success(f"已保存到 {sample_material} 数据集，共 {count} 条记录")
+            else:
+                st.warning(f"未找到有效解，共尝试 {len(combinations)} 组参数，过滤了 {invalid_solutions} 个不合理解")
+    
+    # 返回首页按钮
     if st.button("返回首页"):
         st.session_state.page = "home"
-        st.rerun()  # 立即刷新页面
+        st.rerun()
 
-
-# 主程序入口
+# 主函数 - 控制页面导航
 def main():
     # 初始化会话状态
     if 'page' not in st.session_state:
@@ -2196,7 +2199,7 @@ def main():
         st.session_state.confirm_clear = False
     if 'previous_page' not in st.session_state:
         st.session_state.previous_page = "home"
-
+    
     # 页面导航
     if st.session_state.page == "home":
         home_page()
