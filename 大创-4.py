@@ -1933,9 +1933,9 @@ def manual_mode_page():
         value=min(100, total_combinations)
     )
     
-    if st.button("开始求解方程组"):
+    if st.button("开始求解"):
         valid = True
-        # 检查关键参数是否已输入 - 使用Symbol类进行类型检查
+        # 检查关键参数是否已输入
         for var in ['rh0f', 'rh0b', 'rh0s']:
             if isinstance(input_params.get(var), Symbol):
                 valid = False
@@ -1950,6 +1950,7 @@ def manual_mode_page():
         if not valid:
             return
             
+        # 生成参数组合
         combinations = itertools.product(*[[(k, val) for val in v] for k, v in range_params.items()])
         
         # 截断过多的组合
@@ -1966,162 +1967,103 @@ def manual_mode_page():
         
         for combo in combinations:
             count += 1
-            # 每10次更新进度条
             if count % 10 == 0 or count == total:
                 progress_bar.progress(count / total)
                 
             current_subs = {sym_vars[k]: v for k, v in combo}
             
-            # 检查物理合理性
+            # 构建方程组（基于Rankine-Hugoniot守恒关系）
+            eqs = [
+                # 飞片质量守恒: rho0f·Df = rhf·(Df - uf)
+                Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
+                # 飞片速度关系: w = Df + uf
+                Eq(sym_vars['w'] - (sym_vars['Df'] + sym_vars['uf']), 0),
+                # 基板质量守恒: rho0b·Db = rhb·(Db - ub)
+                Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
+                # 飞片动量守恒: Pf = rho0f·Df·uf
+                Eq(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*sym_vars['uf'], 0),
+                # 基板动量守恒: Pb = rho0b·Db·ub
+                Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*sym_vars['ub'], 0),
+                # 飞片能量守恒
+                Eq(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
+                # 基板能量守恒
+                Eq(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
+                # 飞片Hugoniot关系: Df = C0f + Sf·uf
+                Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*sym_vars['uf'], 0),
+                # 基板Hugoniot关系: Db = C0b + Sb·ub
+                Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*sym_vars['ub'], 0),
+                # 界面压力连续性: Pf = Pb
+                Eq(sym_vars['Pf'] - sym_vars['Pb'], 0),
+                # 界面粒子速度连续性: uf = ub
+                Eq(sym_vars['uf'] - sym_vars['ub'], 0)
+            ]
+            
+            # 添加温度相关方程
+            if calculate_temp:
+                eqs.append(Eq(sym_vars['Tf'] - 300 - (sym_vars['Ef'] - sym_vars['E0f'])*1e6 / 
+                             (Cv_values['f'] * (1 + sym_vars['gammaf']/2)), 0))
+                eqs.append(Eq(sym_vars['Tb'] - 300 - (sym_vars['Eb'] - sym_vars['E0b'])*1e6 / 
+                             (Cv_values['b'] * (1 + sym_vars['gammab']/2)), 0))
+            
+            # 样品相关方程（根据是否与基板同材料判断）
             try:
-                # 检查飞片参数物理合理性
-                if 'rh0f' in current_subs and 'Df' in current_subs and 'uf' in current_subs:
-                    rh0f_val = float(current_subs['rh0f'])
-                    Df_val = float(current_subs['Df'])
-                    uf_val = float(current_subs['uf'])
-                    
-                    if rh0f_val <= 0:
-                        st.warning("飞片初始密度必须为正数")
-                        continue
-                    if Df_val <= uf_val:
-                        st.warning(f"飞片冲击波速度(Df={Df_val})必须大于粒子速度(uf={uf_val})")
-                        continue
+                same_material = (current_subs.get(sym_vars['rh0s'], sym_vars['rh0s']) == current_subs.get(sym_vars['rh0b'], sym_vars['rh0b']) and
+                                current_subs.get(sym_vars['C0s'], sym_vars['C0s']) == current_subs.get(sym_vars['C0b'], sym_vars['C0b']))
+            except:
+                same_material = False
                 
-                # 方程组定义 - 使用修正后的飞片速度方程
-                eqs = [
-                    # 飞片质量守恒: rho0f·Df = rhf·(Df - uf)
-                    Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
-                    # 飞片速度与粒子速度关系 (实验室坐标系): w = Df + uf
-                    Eq(sym_vars['w'] - (sym_vars['Df'] + sym_vars['uf']), 0),
-                    # 基板质量守恒: rho0b·Db = rhb·(Db - ub)
-                    Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
-                    # 飞片动量守恒: Pf = rho0f·Df·uf
-                    Eq(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*sym_vars['uf'], 0),
-                    # 基板动量守恒: Pb = rho0b·Db·ub
-                    Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*sym_vars['ub'], 0),
-                    # 飞片能量守恒: Ef = E0f + 0.5·Pf·(1/rho0f - 1/rhf)
-                    Eq(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
-                    # 基板能量守恒: Eb = E0b + 0.5·Pb·(1/rho0b - 1/rhb)
-                    Eq(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
-                    # 飞片Hugoniot关系: Df = C0f + Sf·uf
-                    Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*sym_vars['uf'], 0),
-                    # 基板Hugoniot关系: Db = C0b + Sb·ub
-                    Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*sym_vars['ub'], 0),
-                    # 界面压力连续性: Pf = Pb
-                    Eq(sym_vars['Pf'] - sym_vars['Pb'], 0),
-                    # 界面粒子速度连续性: uf = ub
-                    Eq(sym_vars['uf'] - sym_vars['ub'], 0)
+            if same_material:
+                eqs += [
+                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),
+                    Eq(sym_vars['ub'] - sym_vars['us'], 0),
+                    Eq(sym_vars['rhb'] - sym_vars['rhs'], 0),
+                    Eq(sym_vars['Db'] - sym_vars['Ds'], 0),
+                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0)
                 ]
-                
-                # 温度相关方程（仅当计算温度时添加）
                 if calculate_temp:
-                    # 飞片温度方程 (Mie-Grüneisen)
-                    eqs.append(Eq(sym_vars['Tf'] - 300 - (sym_vars['Ef'] - sym_vars['E0f'])*1e6 / 
-                                 (Cv_values['f'] * (1 + sym_vars['gammaf']/2)), 0))
-                    # 基板温度方程
-                    eqs.append(Eq(sym_vars['Tb'] - 300 - (sym_vars['Eb'] - sym_vars['E0b'])*1e6 / 
-                                 (Cv_values['b'] * (1 + sym_vars['gammab']/2)), 0))
-                
-                # 判断样品与基板是否为同一材料
-                is_same_material = flyer_material.lower() == sample_material.lower()
-                
-                if is_same_material:
-                    # 样品与基板为同一材料：参数与基板一致
-                    eqs += [
-                        Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),  # 压力连续性
-                        Eq(sym_vars['ub'] - sym_vars['us'], 0),  # 速度连续性
-                        Eq(sym_vars['rhb'] - sym_vars['rhs'], 0), # 密度连续性
-                        Eq(sym_vars['Db'] - sym_vars['Ds'], 0),  # 冲击波速度连续性
-                        # 样品能量守恒
-                        Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0)
-                    ]
-                    
-                    # 温度相关方程（仅当计算温度时添加）
-                    if calculate_temp:
-                        eqs += [
-                            Eq(sym_vars['Tb'] - sym_vars['Ts'], 0),
-                            Eq(sym_vars['gammab'] - sym_vars['gammas'], 0)
-                        ]
-                else:
-                    # 样品与基板为不同材料：单独计算
-                    eqs += [
-                        # 样品质量守恒
-                        Eq(sym_vars['rh0s']*sym_vars['Ds'] - sym_vars['rhb']*(sym_vars['Ds'] - sym_vars['us']), 0),
-                        # 基板-样品界面动量守恒
-                        Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*(2*sym_vars['ub'] - sym_vars['us']), 0),
-                        # 样品动量守恒
-                        Eq(sym_vars['Ps'] - sym_vars['rh0s']*sym_vars['Ds']*sym_vars['us'], 0),
-                        # 样品能量守恒
-                        Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0),
-                        # 样品Hugoniot关系
-                        Eq(sym_vars['Ds'] - sym_vars['C0s'] - sym_vars['Ss']*sym_vars['us'], 0),
-                        # 基板-样品界面Hugoniot关系
-                        Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*(2*sym_vars['ub'] - sym_vars['us']), 0),
-                        Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),  # 压力连续性
-                        Eq(sym_vars['ub'] - sym_vars['us'], 0)   # 速度连续性
-                    ]
-                    
-                    # 温度相关方程（仅当计算温度时添加）
-                    if calculate_temp:
-                        eqs.append(Eq(sym_vars['Ts'] - 300 - (sym_vars['Es'] - sym_vars['E0s'])*1e6 / 
-                                     (Cv_values['s'] * (1 + sym_vars['gammas']/2)), 0))
-                
-                # 代入已知参数
-                substituted_eqs = [eq.subs(current_subs) for eq in eqs]
-                remaining_vars = list(set().union(*[eq.free_symbols for eq in substituted_eqs]))
-                
-                if not remaining_vars:
-                    continue
-                    
+                    eqs += [Eq(sym_vars['Tb'] - sym_vars['Ts'], 0)]
+            else:
+                eqs += [
+                    Eq(sym_vars['rh0s']*sym_vars['Ds'] - sym_vars['rhb']*(sym_vars['Ds'] - sym_vars['us']), 0),
+                    Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*(2*sym_vars['ub'] - sym_vars['us']), 0),
+                    Eq(sym_vars['Ps'] - sym_vars['rh0s']*sym_vars['Ds']*sym_vars['us'], 0),
+                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0),
+                    Eq(sym_vars['Ds'] - sym_vars['C0s'] - sym_vars['Ss']*sym_vars['us'], 0),
+                    Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*(2*sym_vars['ub'] - sym_vars['us']), 0),
+                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),
+                    Eq(sym_vars['ub'] - sym_vars['us'], 0)
+                ]
+                if calculate_temp:
+                    eqs.append(Eq(sym_vars['Ts'] - 300 - (sym_vars['Es'] - sym_vars['E0s'])*1e6 / 
+                                 (Cv_values['s'] * (1 + sym_vars['gammas']/2)), 0))
+            
+            # 求解方程组
+            substituted_eqs = [eq.subs(current_subs) for eq in eqs]
+            remaining_vars = list(set().union(*[eq.free_symbols for eq in substituted_eqs]))
+            
+            if remaining_vars:
                 try:
-                    # 构建初始猜测值（基于物理合理范围）
+                    # 构建初始猜测值
                     initial_guess = {}
-                    # 提取已知参数值用于更智能的初始猜测
-                    known_params = {}
-                    for k, v in current_subs.items():
-                        try:
-                            known_params[str(k)] = float(v)
-                        except:
-                            pass
-                    
                     for var in remaining_vars:
                         var_str = str(var)
-                        # 基于已知参数动态设置初始猜测值
-                        if var_str == 'w' and 'Df' in known_params and 'uf' in known_params:
-                            initial_guess[var] = known_params['Df'] + known_params['uf']
-                        elif var_str == 'Df' and 'w' in known_params and 'uf' in known_params:
-                            initial_guess[var] = known_params['w'] - known_params['uf']
-                        elif var_str == 'uf' and 'w' in known_params and 'Df' in known_params:
-                            initial_guess[var] = known_params['w'] - known_params['Df']
-                        elif var_str == 'Pf' and 'rh0f' in known_params and 'Df' in known_params and 'uf' in known_params:
-                            initial_guess[var] = known_params['rh0f'] * known_params['Df'] * known_params['uf']
-                        elif var_str.startswith(('rh0', 'rh')):  # 密度
-                            initial_guess[var] = known_params.get('rh0f', 8.0)
-                        elif var_str.startswith(('D', 'C0', 'u')):  # 速度
-                            if 'w' in known_params:
-                                initial_guess[var] = known_params['w'] / 2
-                            else:
-                                initial_guess[var] = 5.0
-                        elif var_str == 'w':  # 飞片速度
-                            initial_guess[var] = 10.0
-                        elif var_str.startswith('P'):  # 压力
-                            if 'rh0f' in known_params and 'w' in known_params:
-                                initial_guess[var] = known_params['rh0f'] * (known_params['w']/2) * (known_params['w']/2)
-                            else:
-                                initial_guess[var] = 100.0
-                        elif var_str.startswith('gamma'):  # 格吕奈森系数
-                            initial_guess[var] = 2.0
-                        elif var_str.startswith('T'):  # 温度
-                            initial_guess[var] = 3000.0
-                        else:  # 其他参数
+                        if var_str.startswith('rh'):
+                            initial_guess[var] = 8.0  # 密度初始猜测
+                        elif var_str in ['Df', 'Db', 'Ds', 'w']:
+                            initial_guess[var] = 5.0  # 速度初始猜测
+                        elif var_str in ['uf', 'ub', 'us']:
+                            initial_guess[var] = 2.0  # 粒子速度初始猜测
+                        elif var_str.startswith('P'):
+                            initial_guess[var] = 100.0  # 压力初始猜测
+                        elif var_str.startswith('T'):
+                            initial_guess[var] = 3000.0  # 温度初始猜测
+                        else:
                             initial_guess[var] = 1.0
-                    
-                    # 使用数值方法求解
+                            
                     solution = solve_numerically(substituted_eqs, {v:v for v in remaining_vars}, initial_guess)
                     
                     if solution:
                         record = solution.copy()
-                        # 添加已知参数
                         for k, v in current_subs.items():
                             try:
                                 record[str(k)] = float(v)
@@ -2134,61 +2076,53 @@ def manual_mode_page():
                     else:
                         invalid_solutions += 1
                 except Exception as e:
-                    st.warning(f"求解错误: {str(e)} (可能由参数范围不合理引起)")
+                    st.warning(f"求解错误: {str(e)}")
                     invalid_solutions += 1
+        
+        # 展示结果
+        if results:
+            st.success(f"求解完成，找到 {len(results)} 个有效解（过滤 {invalid_solutions} 个不合理解）")
             
-            if results:
-                st.success(f"求解完成，找到 {len(results)} 个符合物理规律的解（过滤了 {invalid_solutions} 个不合理解）")
-                
-                st.subheader("结果数据 (单位: rho=g/cm³, D=km/s, u=km/s, P=GPa, T=K)")
-                df = pd.DataFrame(results)
-                # 选择常用列显示
-                display_cols = ['rh0f', 'Df', 'uf', 'Pf', 'rhf', 'w', 
-                               'rh0b', 'Db', 'ub', 'Pb', 'rhb']
-                if calculate_temp:
-                    display_cols.extend(['Tf', 'Tb'])
-                # 只显示存在的列
-                display_cols = [col for col in display_cols if col in df.columns]
-                st.dataframe(df[display_cols])
-                
-                # 提供下载功能
-                csv = df.to_csv(index=False)
+            st.subheader("结果数据")
+            df = pd.DataFrame(results)
+            st.dataframe(df)
+            
+            # 下载结果
+            csv = df.to_csv(index=False)
+            st.download_button(
+                label="下载结果数据",
+                data=csv,
+                file_name="manual_mode_results.csv",
+                mime="text/csv",
+            )
+            
+            # 结果可视化
+            st.subheader("结果可视化")
+            fig = plot_results_streamlit(results, calculate_temp)
+            if fig:
+                st.pyplot(fig)
+                buf = BytesIO()
+                fig.savefig(buf, format='png', dpi=150)
+                buf.seek(0)
                 st.download_button(
-                    label="下载结果数据",
-                    data=csv,
-                    file_name="manual_mode_results.csv",
-                    mime="text/csv",
+                    label="下载图表",
+                    data=buf,
+                    file_name="manual_mode_plots.png",
+                    mime="image/png"
                 )
-                
-                # 结果可视化
-                st.subheader("结果可视化")
-                fig = plot_results_streamlit(results, calculate_temp)
-                if fig:
-                    st.pyplot(fig)
-                    buf = BytesIO()
-                    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
-                    buf.seek(0)
-                    st.download_button(
-                        label="下载图表",
-                        data=buf,
-                        file_name="manual_mode_analysis.png",
-                        mime="image/png"
-                    )
-                
-                # 保存结果到数据库
-                if st.button("保存结果到数据库"):
-                    count = save_results_to_db(results, sample_material)
-                    if count > 0:
-                        st.success(f"已保存到 {sample_material} 数据集，共 {count} 条记录")
-            else:
-                st.warning(f"未找到有效解，共尝试 {len(combinations)} 组参数，过滤了 {invalid_solutions} 个不合理解")
+            
+            # 保存到数据库
+            if st.button("保存结果到数据库"):
+                count = save_results_to_db(results, sample_material)
+                if count > 0:
+                    st.success(f"已保存 {count} 条记录到 {sample_material} 数据集")
     
     # 返回首页按钮
     if st.button("返回首页"):
         st.session_state.page = "home"
         st.rerun()
 
-# 主函数 - 控制页面导航
+# 主程序入口
 def main():
     # 初始化会话状态
     if 'page' not in st.session_state:
@@ -2200,7 +2134,7 @@ def main():
     if 'previous_page' not in st.session_state:
         st.session_state.previous_page = "home"
     
-    # 页面导航
+    # 页面路由
     if st.session_state.page == "home":
         home_page()
     elif st.session_state.page == "database_mode":
