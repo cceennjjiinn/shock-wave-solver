@@ -6,7 +6,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error
-from sympy import symbols, Eq, solve, simplify
+# 修复：导入Symbol类用于类型检查
+from sympy import symbols, Symbol, Eq, solve, simplify
 from scipy.optimize import least_squares
 from io import BytesIO, StringIO
 from PIL import Image
@@ -1240,9 +1241,9 @@ def database_mode_page():
     
     if st.button("开始求解"):
         valid = True
-        # 检查关键参数是否已输入
+        # 检查关键参数是否已输入 - 修复：使用Symbol类进行类型检查
         for var in ['rh0f', 'rh0b', 'rh0s']:
-            if isinstance(input_params.get(var), symbols):
+            if isinstance(input_params.get(var), Symbol):
                 valid = False
                 st.error(f"{var}（初始密度）为必填参数，请输入值")
         
@@ -1668,9 +1669,9 @@ def manual_mode_page():
     
     if st.button("开始求解方程组"):
         valid = True
-        # 检查关键参数是否已输入
+        # 检查关键参数是否已输入 - 修复：使用Symbol类进行类型检查
         for var in ['rh0f', 'rh0b', 'rh0s']:
-            if isinstance(input_params.get(var), symbols):
+            if isinstance(input_params.get(var), Symbol):
                 valid = False
                 st.error(f"{var}（初始密度）为必填参数，请输入值")
         
