@@ -14,6 +14,10 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error
 from sympy import symbols, Symbol, Eq, simplify, solve
 
+# 设置matplotlib中文字体
+plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
+plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
+
 # 配置日志
 import logging
 logging.basicConfig(
@@ -1291,9 +1295,9 @@ def plot_results_streamlit(results, calculate_temp=True):
                  yerr=[r.get('Pf_err', 0.1) for r in results],
                  xerr=[r.get('uf_err', 0.05) for r in results],
                  fmt='bo', ecolor='r', capsize=5, label='Flyer data')
-    ax1.set_xlabel('Particle Velocity Up (km/s)')
-    ax1.set_ylabel('Shock Pressure P (GPa)')
-    ax1.set_title('Pressure-Particle Velocity Relationship (with error ranges)')
+    ax1.set_xlabel('粒子速度 Up (km/s)')
+    ax1.set_ylabel('冲击压力 P (GPa)')
+    ax1.set_title('压力-粒子速度关系（含误差范围）')
     ax1.legend()
     ax1.grid(True)
     
@@ -1306,35 +1310,35 @@ def plot_results_streamlit(results, calculate_temp=True):
         ts_values = [r.get('Ts', 0) for r in results]
         
         ax2 = fig.add_subplot(222)
-        ax2.scatter(pf_values, tf_values, c='orange', label='Flyer temperature')
+        ax2.scatter(pf_values, tf_values, c='orange', label='飞片温度')
         # 添加室温参考线
-        ax2.axhline(y=300, color='k', linestyle='--', label='Room temperature (300 K)')
-        ax2.set_xlabel('Shock Pressure P (GPa)')
-        ax2.set_ylabel('Shock Temperature T (K)')
-        ax2.set_title('Temperature-Pressure Relationship')
+        ax2.axhline(y=300, color='k', linestyle='--', label='室温 (300 K)')
+        ax2.set_xlabel('冲击压力 P (GPa)')
+        ax2.set_ylabel('冲击温度 T (K)')
+        ax2.set_title('温度-压力关系')
         ax2.legend()
         ax2.grid(True)
     
     # 3. 冲击波速度-粒子速度图
     ax3 = fig.add_subplot(223 if calculate_temp else 222)
-    ax3.scatter(uf_values, df_values, c='blue', label='Flyer')
+    ax3.scatter(uf_values, df_values, c='blue', label='飞片')
     # 移除Us = Up线的绘制
-    ax3.set_xlabel('Particle Velocity Up (km/s)')
-    ax3.set_ylabel('Shock Wave Velocity Us (km/s)')
-    ax3.set_title('Shock Wave Velocity-Particle Velocity Relationship')
+    ax3.set_xlabel('粒子速度 Up (km/s)')
+    ax3.set_ylabel('冲击波速度 Us (km/s)')
+    ax3.set_title('冲击波速度-粒子速度关系')
     ax3.legend()
     ax3.grid(True)
     
     # 4. 密度-压力图
     ax4 = fig.add_subplot(224 if calculate_temp else 223)
-    ax4.scatter(pf_values, rhf_values, c='green', label='Flyer')
+    ax4.scatter(pf_values, rhf_values, c='green', label='飞片')
     # 添加初始密度参考线（如果有）
     if results and 'rh0f' in results[0]:
         avg_rh0 = np.mean([r.get('rh0f', 0) for r in results])
-        ax4.axhline(y=avg_rh0, color='k', linestyle='--', label=f'Avg initial density: {avg_rh0:.2f} g/cm³')
-    ax4.set_xlabel('Shock Pressure P (GPa)')
-    ax4.set_ylabel('Compressed Density (g/cm³)')
-    ax4.set_title('Density-Pressure Relationship')
+        ax4.axhline(y=avg_rh0, color='k', linestyle='--', label=f'平均初始密度: {avg_rh0:.2f} g/cm³')
+    ax4.set_xlabel('冲击压力 P (GPa)')
+    ax4.set_ylabel('压缩密度 (g/cm³)')
+    ax4.set_title('密度-压力关系')
     ax4.legend()
     ax4.grid(True)
     
@@ -2022,7 +2026,7 @@ def manual_mode_page():
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Db", "C0b", "ub"] else 
-                         "GPa·                         "GPa·cm³/g" if var in ["E0b", "Eb"] else
+                         "GPa·cm³/g" if var in ["E0b", "Eb"] else
                          "GPa" if var == "Pb" else 
                          "K" if var == "Tb" else "无量纲",
                     desc="基板初始密度（必须输入）" if var == "rh0b" else
@@ -2039,7 +2043,7 @@ def manual_mode_page():
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
-    
+
     # 样品参数
     with st.expander(f"{sample_material} 样品参数", expanded=True):
         cols = st.columns(3)
@@ -2078,12 +2082,12 @@ def manual_mode_page():
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
-    
+
     # 保存当前参数按钮
     col_save, col_other = st.columns([1, 3])
     with col_save:
         if st.button("保存当前参数到数据库"):
-            # 准备要保存的数据
+            # 准备输入数据字典
             input_data = {
                 'rho0': input_params.get('rh0f'),
                 'Us': input_params.get('Df'),
@@ -2093,14 +2097,13 @@ def manual_mode_page():
                 'T': input_params.get('Tf') if calculate_temp else None
             }
             # 过滤符号变量（未知数）
-            input_data = {k: v[0] if isinstance(v, list) and len(v) > 0 else v 
-                         for k, v in input_data.items() 
+            input_data = {k: v[0] if isinstance(v, list) else v for k, v in input_data.items() 
                          if not isinstance(v, Symbol) and v is not None}
             
             count = save_input_data_to_db(input_data, sample_material, exp_method)
             if count > 0:
                 st.success(f"已保存到 {sample_material} 数据集，共 {count} 条记录")
-    
+
     # 参数组合限制
     range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
     total_combinations = 1
@@ -2113,7 +2116,7 @@ def manual_mode_page():
         max_value=1000, 
         value=min(100, total_combinations)
     )
-    
+
     if st.button("开始求解"):
         valid = True
         # 检查关键参数是否已输入
@@ -2152,7 +2155,7 @@ def manual_mode_page():
                 
             current_subs = {sym_vars[k]: v for k, v in combo}
             
-            # 方程组 - 与数据库模式相同的物理方程
+            # 方程组（与数据库模式相同）
             eqs = [
                 # 飞片质量守恒: rho0f·Df = rhf·(Df - uf)
                 Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
@@ -2178,22 +2181,21 @@ def manual_mode_page():
                 Eq(sym_vars['uf'] - sym_vars['ub'], 0)
             ]
             
-            # 温度相关方程
+            # 添加温度相关方程
             if calculate_temp:
                 eqs.append(Eq(sym_vars['Tf'] - 300 - (sym_vars['Ef'] - sym_vars['E0f'])*1e6 / 
                              (Cv_values['f'] * (1 + sym_vars['gammaf']/2)), 0))
                 eqs.append(Eq(sym_vars['Tb'] - 300 - (sym_vars['Eb'] - sym_vars['E0b'])*1e6 / 
                              (Cv_values['b'] * (1 + sym_vars['gammab']/2)), 0))
             
-            # 样品相关方程
+            # 判断样品与基板是否为同一材料
             try:
-                # 检查样品和基板是否为同一材料
-                cond = (sample_material.lower() == base_material.lower())
+                is_same_material = (sample_material.lower() == base_material.lower())
             except:
-                cond = False
+                is_same_material = False
                 
-            if cond:
-                # 样品与基板为同一材料
+            if is_same_material:
+                # 样品与基板参数一致
                 eqs += [
                     Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),
                     Eq(sym_vars['ub'] - sym_vars['us'], 0),
@@ -2253,7 +2255,7 @@ def manual_mode_page():
                     elif var_str.startswith(('rh0', 'rh')):
                         initial_guess[var] = known_params.get('rh0f', 8.0)
                     elif var_str.startswith(('D', 'C0', 'u')):
-                        initial_guess[var] = known_params.get('w', 10.0) / 2 if 'w' in known_params else 5.0
+                        initial_guess[var] = known_params.get('w', 10.0) / 2
                     elif var_str == 'w':
                         initial_guess[var] = 10.0
                     elif var_str.startswith('P'):
@@ -2303,12 +2305,12 @@ def manual_mode_page():
             fig = plot_results_streamlit(results, calculate_temp)
             if fig:
                 st.pyplot(fig)
-                buf2 = BytesIO()
-                fig.savefig(buf2, format='png', dpi=150, bbox_inches='tight')
-                buf2.seek(0)
+                buf = BytesIO()
+                fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+                buf.seek(0)
                 st.download_button(
                     label="下载图表",
-                    data=buf2,
+                    data=buf,
                     file_name="manual_analysis_results.png",
                     mime="image/png"
                 )
@@ -2319,7 +2321,7 @@ def manual_mode_page():
                     st.success(f"已保存 {count} 条记录到 {sample_material} 数据集")
         else:
             st.warning(f"未找到有效解，尝试了 {total} 组参数")
-    
+
     if st.button("返回主页"):
         st.session_state.page = "home"
         st.rerun()
@@ -2330,12 +2332,10 @@ def main():
     if 'page' not in st.session_state:
         st.session_state.page = "home"
     if 'confirm_delete' not in st.session_state:
-        st.session_state['confirm_delete'] = False
+        st.session_state.confirm_delete = False
     if 'confirm_clear' not in st.session_state:
-        st.session_state['confirm_clear'] = False
-    if 'previous_page' not in st.session_state:
-        st.session_state.previous_page = "home"
-    
+        st.session_state.confirm_clear = False
+        
     # 根据当前页面状态显示不同内容
     if st.session_state.page == "home":
         home_page()
@@ -2347,7 +2347,7 @@ def main():
         view_database()
         # 返回按钮
         if st.button("返回上一页"):
-            st.session_state.page = st.session_state.previous_page
+            st.session_state.page = st.session_state.get('previous_page', 'home')
             st.rerun()
 
 if __name__ == "__main__":
