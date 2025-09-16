@@ -4,6 +4,10 @@ from sqlalchemy.engine import Engine
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import pymysql
+import logging
+from datetime import datetime
+import traceback
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error
 from sympy import symbols, Symbol, Eq, solve, simplify
@@ -13,33 +17,153 @@ from PIL import Image
 import itertools
 import os
 
+# ------------------------------
+# 日志配置：记录到文件+控制台，包含详细时间和步骤
+# ------------------------------
+logging.basicConfig(
+    level=logging.DEBUG,  # 最低日志级别：DEBUG（最详细）
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("shock_wave_operation.log", encoding='utf-8'),  # 日志写入文件
+        logging.StreamHandler()  # 同时输出到控制台
+    ]
+)
+logger = logging.getLogger(__name__)
+
 # 设置中文字体（保持界面中的中文显示）
 plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC", "Arial"]
 plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
 
-# 创建SQLite引擎 - 优化连接池配置
-sqlite_path = os.path.abspath('shock_wave_data.db')
-sqlite_engine = create_engine(
-    f'sqlite:///{sqlite_path}',
-    pool_size=5,          # 保持5个持久连接
-    max_overflow=10,      # 最多创建10个额外临时连接
-    pool_recycle=3600     # 1小时后回收连接
-)
+# ------------------------------
+# 数据库配置（支持MySQL和SQLite）
+# ------------------------------
+DB_CONFIG = {
+    "mysql": {
+        "host": "localhost",
+        "user": "your_username",
+        "password": "your_password",
+        "database": "your_database",
+        "port": 3306,
+        "charset": "utf8mb4"
+    },
+    "sqlite": {
+        "path": os.path.abspath('shock_wave_data.db')
+    }
+}
+
+# 数据库类型选择（可在界面切换）
+DB_TYPE = "sqlite"  # 默认使用SQLite
+
+# 创建数据库引擎 - 支持MySQL和SQLite
+def create_db_engine(db_type="sqlite"):
+    """创建指定类型的数据库引擎"""
+    try:
+        if db_type == "mysql":
+            config = DB_CONFIG["mysql"]
+            engine = create_engine(
+                f"mysql+pymysql://{config['user']}:{config['password']}@{config['host']}:{config['port']}/{config['database']}?charset={config['charset']}",
+                pool_size=5,
+                max_overflow=10,
+                pool_recycle=3600
+            )
+            logger.info(f"成功创建MySQL引擎连接：{config['host']}:{config['port']}/{config['database']}")
+            return engine
+        else:  # SQLite
+            config = DB_CONFIG["sqlite"]
+            engine = create_engine(
+                f"sqlite:///{config['path']}",
+                pool_size=5,
+                max_overflow=10,
+                pool_recycle=3600
+            )
+            logger.info(f"成功创建SQLite引擎连接：{config['path']}")
+            return engine
+    except Exception as e:
+        logger.error(f"创建数据库引擎失败: {str(e)}")
+        st.error(f"数据库连接失败: {str(e)}")
+        return None
+
+# 初始化数据库引擎
+db_engine = create_db_engine(DB_TYPE)
 
 # SQLite性能优化
 @event.listens_for(Engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
-    cursor = dbapi_connection.cursor()
-    cursor.execute('PRAGMA journal_mode=WAL;')  # 预写日志
-    cursor.execute('PRAGMA synchronous=NORMAL;')  # 同步模式
-    cursor.execute('PRAGMA temp_store=MEMORY;')   # 临时存储
-    cursor.execute('PRAGMA cache_size=-20000;')   # 增加缓存（20MB）
-    cursor.close()
+    if DB_TYPE == "sqlite":
+        cursor = dbapi_connection.cursor()
+        cursor.execute('PRAGMA journal_mode=WAL;')  # 预写日志
+        cursor.execute('PRAGMA synchronous=NORMAL;')  # 同步模式
+        cursor.execute('PRAGMA temp_store=MEMORY;')   # 临时存储
+        cursor.execute('PRAGMA cache_size=-20000;')   # 增加缓存（20MB）
+        cursor.close()
+
+# ------------------------------
+# 核心函数：数据库查询+全链路日志（适配多数据库）
+# ------------------------------
+def query_database(sql, params=None, db_type=DB_TYPE):
+    """通用数据库查询函数，支持参数化查询和多数据库类型"""
+    conn = None
+    cursor = None
+    try:
+        # 1. 建立数据库连接
+        logger.info("开始建立数据库连接...")
+        engine = create_db_engine(db_type)
+        if not engine:
+            return None
+            
+        conn = engine.connect()
+        config = DB_CONFIG[db_type]
+        if db_type == "mysql":
+            logger.debug(f"数据库连接成功：{config['host']}:{config['port']}/{config['database']}")
+        else:
+            logger.debug(f"数据库连接成功：{config['path']}")
+
+        # 2. 执行查询
+        logger.info(f"执行SQL查询：{sql}")
+        start_time = datetime.now()
+        
+        if db_type == "mysql":
+            # 使用pymysql原生接口执行查询
+            cursor = conn.connection.cursor(pymysql.cursors.DictCursor)
+            cursor.execute(sql, params or {})
+            result = cursor.fetchall()
+        else:
+            # 使用SQLAlchemy执行SQLite查询
+            result = conn.execute(text(sql), params or {}).mappings().all()
+            # 转换为字典列表
+            result = [dict(row) for row in result]
+            
+        exec_time = (datetime.now() - start_time).total_seconds()
+        logger.debug(f"SQL执行完成，耗时：{exec_time:.3f}秒")
+
+        # 3. 获取结果并记录返回行数
+        row_count = len(result)
+        logger.info(f"数据库返回行数：{row_count}行")
+        if row_count > 0:
+            logger.debug(f"返回数据示例（前2行）：{result[:2]}")  # 日志只显示前2行避免刷屏
+
+        return result
+
+    except Exception as e:
+        # 记录异常细节
+        logger.error(f"查询异常：{str(e)}")
+        logger.error(f"异常堆栈：{traceback.format_exc()}")
+        st.error(f"数据库查询失败: {str(e)}")
+        return None
+
+    finally:
+        # 关闭连接（无论成功失败都执行）
+        if cursor:
+            cursor.close()
+            logger.debug("游标已关闭")
+        if conn:
+            conn.close()
+            logger.debug("数据库连接已关闭")
 
 # 初始化数据库 - 添加材料字段索引
 def init_database():
     try:
-        with sqlite_engine.connect() as conn:
+        with db_engine.connect() as conn:
             if not conn.dialect.has_table(conn, 'shock_wave_all_data'):
                 conn.execute(text("""
                     CREATE TABLE shock_wave_all_data (
@@ -59,24 +183,41 @@ def init_database():
                     )
                 """))
                 conn.commit()
+                logger.info("数据库表结构初始化完成")
     except Exception as e:
+        logger.error(f"数据库初始化失败: {str(e)}")
         st.error(f"数据库初始化失败: {str(e)}")
 
-# 修复数据库表结构 - 确保gamma字段存在
+# 修复数据库表结构 - 确保所有必要字段存在
 def fix_database_schema():
-    """修复数据库表结构，添加缺失的gamma字段"""
+    """修复数据库表结构，添加缺失的字段"""
     try:
-        with sqlite_engine.connect() as conn:
-            # 检查是否存在gamma字段
+        with db_engine.connect() as conn:
+            # 检查是否存在所需字段
             cursor = conn.connection.cursor()
-            cursor.execute("PRAGMA table_info(shock_wave_all_data)")
-            columns = [row[1] for row in cursor.fetchall()]
+            if DB_TYPE == "mysql":
+                cursor.execute("DESCRIBE shock_wave_all_data")
+            else:  # SQLite
+                cursor.execute("PRAGMA table_info(shock_wave_all_data)")
+                
+            columns = [row[0] if DB_TYPE == "mysql" else row[1] for row in cursor.fetchall()]
             
-            if 'gamma' not in columns:
-                conn.execute(text("ALTER TABLE shock_wave_all_data ADD COLUMN gamma REAL"))
-                conn.commit()
-                st.success("数据库表结构已修复，添加了gamma字段")
+            # 需要确保存在的字段
+            required_columns = [
+                ('gamma', 'REAL'),
+                ('T', 'REAL'),
+                ('V', 'REAL'),
+                ('V_V0', 'REAL')
+            ]
+            
+            for col_name, col_type in required_columns:
+                if col_name not in columns:
+                    conn.execute(text(f"ALTER TABLE shock_wave_all_data ADD COLUMN {col_name} {col_type}"))
+                    conn.commit()
+                    logger.info(f"数据库表结构已修复，添加了{col_name}字段")
+                    st.success(f"数据库表结构已修复，添加了{col_name}字段")
     except Exception as e:
+        logger.error(f"修复数据库表结构失败: {str(e)}")
         st.error(f"修复数据库表结构失败: {str(e)}")
 
 # 先初始化数据库，再修复可能的表结构问题
@@ -134,11 +275,13 @@ def validate_physical合理性(data, material_type="通用"):
 @st.cache_data(ttl=3600)  # 缓存1小时
 def get_all_materials():
     try:
-        query = text("SELECT DISTINCT material FROM shock_wave_all_data")
-        with sqlite_engine.connect() as conn:
-            df = pd.read_sql(query, conn)
-        return df['material'].tolist()
+        query = "SELECT DISTINCT material FROM shock_wave_all_data"
+        result = query_database(query)
+        if result:
+            return [row['material'] for row in result]
+        return []
     except Exception as e:
+        logger.warning(f"获取材料列表失败: {str(e)}")
         st.warning(f"获取材料列表失败: {str(e)}")
         return []
 
@@ -152,9 +295,12 @@ def get_material_data(material_name, fields=None):
             if 'exp_method' not in fields:
                 fields.append('exp_method')
             fields = ', '.join(fields)  # 按需指定字段
-        query = text(f"SELECT {fields} FROM shock_wave_all_data WHERE material = :material")
-        with sqlite_engine.connect() as conn:
-            df = pd.read_sql(query, conn, params={'material': material_name})
+            
+        query = f"SELECT {fields} FROM shock_wave_all_data WHERE material = :material"
+        result = query_database(query, {'material': material_name})
+        
+        # 转换为DataFrame
+        df = pd.DataFrame(result) if result else pd.DataFrame()
         
         # 验证并清理数据
         if not df.empty:
@@ -170,6 +316,7 @@ def get_material_data(material_name, fields=None):
         
         return df
     except Exception as e:
+        logger.warning(f"获取材料数据失败: {str(e)}")
         st.warning(f"获取材料数据失败: {str(e)}")
         return pd.DataFrame()
 
@@ -181,7 +328,7 @@ def save_results_to_db(results, material_name="Copper"):
     try:
         count = 0
         invalid_count = 0
-        with sqlite_engine.begin() as conn:
+        with db_engine.begin() as conn:
             for result in results:
                 # 检查物理合理性
                 errors = validate_physical合理性({
@@ -227,8 +374,10 @@ def save_results_to_db(results, material_name="Copper"):
         
         if invalid_count > 0:
             st.warning(f"过滤了 {invalid_count} 个不合理解，未保存到数据库")
+        logger.info(f"成功保存 {count} 条记录到数据库")
         return count
     except Exception as e:
+        logger.error(f"保存结果到数据库失败: {str(e)}")
         st.error(f"保存失败: {str(e)}")
         return 0
 
@@ -268,15 +417,17 @@ def save_input_parameters(input_params, material_name="Copper", exp_method="manu
             'T': data_dict['T']
         }
         
-        with sqlite_engine.begin() as conn:
+        with db_engine.begin() as conn:
             stmt = text("""
                 INSERT INTO shock_wave_all_data 
                 (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T) 
                 VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
             """)
             conn.execute(stmt, data)
+        logger.info(f"成功保存输入参数到 {material_name} 数据集")
         return 1
     except Exception as e:
+        logger.error(f"保存输入参数失败: {str(e)}")
         st.error(f"保存输入参数失败: {str(e)}")
         return 0
 
@@ -303,7 +454,7 @@ def save_input_data_to_db(input_data, material_name, exp_method="manual_input"):
                 st.error(f"- {err}")
             return 0
 
-        with sqlite_engine.begin() as conn:
+        with db_engine.begin() as conn:
             data = {
                 'material': material_name,
                 'rho0': float(input_data['rho0']),
@@ -323,8 +474,10 @@ def save_input_data_to_db(input_data, material_name, exp_method="manual_input"):
                 VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
             """)
             conn.execute(stmt, data)
+        logger.info(f"成功保存输入数据到 {material_name} 数据集")
         return 1
     except Exception as e:
+        logger.error(f"保存输入数据失败: {str(e)}")
         st.error(f"保存输入数据失败: {str(e)}")
         return 0
 
@@ -344,7 +497,7 @@ def bulk_import_data(df, material_name, exp_method="bulk_import"):
     try:
         count = 0
         invalid_count = 0
-        with sqlite_engine.begin() as conn:
+        with db_engine.begin() as conn:
             for _, row in df.iterrows():
                 # 跳过包含空值的行
                 if row[required_columns].isnull().any():
@@ -380,8 +533,10 @@ def bulk_import_data(df, material_name, exp_method="bulk_import"):
         
         if invalid_count > 0:
             st.warning(f"过滤了 {invalid_count} 个不合理解，未导入数据库")
+        logger.info(f"成功批量导入 {count} 条记录到 {material_name} 数据集")
         return count
     except Exception as e:
+        logger.error(f"批量导入失败: {str(e)}")
         st.error(f"批量导入失败: {str(e)}")
         return 0
 
@@ -392,13 +547,16 @@ def bulk_delete_records(ids):
         return 0
         
     try:
-        with sqlite_engine.begin() as conn:
+        with db_engine.begin() as conn:
             placeholders = ', '.join([':id' + str(i) for i in range(len(ids))])
             params = {'id' + str(i): id for i, id in enumerate(ids)}
             stmt = text(f"DELETE FROM shock_wave_all_data WHERE id IN ({placeholders})")
             result = conn.execute(stmt, params)
-            return result.rowcount
+            deleted_count = result.rowcount
+            logger.info(f"成功删除 {deleted_count} 条记录")
+            return deleted_count
     except Exception as e:
+        logger.error(f"删除失败: {str(e)}")
         st.error(f"删除失败: {str(e)}")
         return 0
 
@@ -409,17 +567,41 @@ def clear_material_data(material_name):
         return 0
         
     try:
-        with sqlite_engine.begin() as conn:
+        with db_engine.begin() as conn:
             stmt = text("DELETE FROM shock_wave_all_data WHERE material = :material")
             result = conn.execute(stmt, {'material': material_name})
-            return result.rowcount
+            deleted_count = result.rowcount
+            logger.info(f"成功清空 {material_name} 的所有 {deleted_count} 条记录")
+            return deleted_count
     except Exception as e:
+        logger.error(f"清空数据失败: {str(e)}")
         st.error(f"清空数据失败: {str(e)}")
         return 0
 
 def view_database():
     """显示数据库内容，包含批量添加和删除功能"""
     with st.expander("数据库内容", expanded=True):
+        # 数据库类型切换
+        global DB_TYPE, db_engine
+        new_db_type = st.radio("选择数据库类型", ["sqlite", "mysql"], 
+                              index=0 if DB_TYPE == "sqlite" else 1)
+        if new_db_type != DB_TYPE:
+            DB_TYPE = new_db_type
+            db_engine = create_db_engine(DB_TYPE)
+            st.success(f"已切换至{DB_TYPE}数据库")
+            st.rerun()
+        
+        # 显示当前数据库配置
+        with st.expander("数据库配置", expanded=False):
+            if DB_TYPE == "mysql":
+                config = DB_CONFIG["mysql"]
+                st.text(f"主机: {config['host']}")
+                st.text(f"端口: {config['port']}")
+                st.text(f"数据库: {config['database']}")
+                st.text(f"用户: {config['user']}")
+            else:
+                st.text(f"数据库文件: {DB_CONFIG['sqlite']['path']}")
+        
         # 批量操作区域
         st.subheader("批量数据操作")
         col1, col2 = st.columns(2)
@@ -1833,298 +2015,46 @@ def manual_mode_page():
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
-    
-    # 基板参数输入 - 所有参数都需要独立输入
-    with st.expander(f"{base_material} 基板参数", expanded=True):
-        cols = st.columns(3)
-        for i, var in enumerate(variables["b"]):
-            # 温度参数仅在计算温度时显示
-            if var.startswith('T') and not calculate_temp:
-                continue
-                
-            with cols[i % 3]:
-                default_val = 2.0 if var == "gammab" else None
-                # 为初始密度设置默认值
-                if var == "rh0b":
-                    default_val = 2.7  # 铝的默认密度
-                
-                val = get_input_streamlit(
-                    label=var,
-                    var_name=var,
-                    key=f"b_{var}",
-                    default=default_val,
-                    unit="g/cm³" if var.startswith("rh") else 
-                         "km/s" if var in ["Db", "C0b", "ub"] else 
-                         "GPa·cm³/g" if var in ["E0b", "Eb"] else
-                         "GPa" if var == "Pb" else
-                         "K" if var == "Tb" else "无量纲",
-                    desc="基板初始密度（必须输入）" if var == "rh0b" else
-                         "基板压缩密度" if var == "rhb" else
-                         "基板冲击波速度" if var == "Db" else
-                         "基板体声速" if var == "C0b" else
-                         "基板Hugoniot参数" if var == "Sb" else
-                         "基板初始内能密度" if var == "E0b" else
-                         "基板压缩后内能密度" if var == "Eb" else
-                         "基板粒子速度" if var == "ub" else
-                         "基板冲击压力" if var == "Pb" else
-                         "基板格吕奈森系数" if var == "gammab" else
-                         "基板冲击温度"
-                )
-                input_params[var] = val
-                sym_vars[var] = symbols(var)
-    
-    # 样品参数输入 - 所有参数都需要独立输入
-    with st.expander(f"{sample_material} 样品参数", expanded=True):
-        cols = st.columns(3)
-        for i, var in enumerate(variables["s"]):
-            # 温度参数仅在计算温度时显示
-            if var.startswith('T') and not calculate_temp:
-                continue
-                
-            with cols[i % 3]:
-                default_val = 2.0 if var == "gammas" else None
-                # 为初始密度设置默认值
-                if var == "rh0s":
-                    default_val = 8.96  # 铜的默认密度
-                
-                val = get_input_streamlit(
-                    label=var,
-                    var_name=var,
-                    key=f"s_{var}",
-                    default=default_val,
-                    unit="g/cm³" if var.startswith("rh") else 
-                         "km/s" if var in ["Ds", "C0s", "us"] else 
-                         "GPa·cm³/g" if var in ["E0s", "Es"] else
-                         "GPa" if var == "Ps" else
-                         "K" if var == "Ts" else "无量纲",
-                    desc="样品初始密度（必须输入）" if var == "rh0s" else
-                         "样品压缩密度" if var == "rhs" else
-                         "样品冲击波速度" if var == "Ds" else
-                         "样品体声速" if var == "C0s" else
-                         "样品Hugoniot参数S" if var == "Ss" else
-                         "样品初始内能密度" if var == "E0s" else
-                         "样品压缩后内能密度" if var == "Es" else
-                         "样品粒子速度" if var == "us" else
-                         "样品冲击压力" if var == "Ps" else
-                         "样品格吕奈森系数" if var == "gammas" else
-                         "样品冲击温度"
-                )
-                input_params[var] = val
-                sym_vars[var] = symbols(var)
-    
-    # 固定显示保存当前参数按钮
-    col_save, col_other = st.columns([1, 3])
-    with col_save:
-        if st.button("保存当前参数到数据库"):
-            count = save_input_parameters(input_params, sample_material, exp_method)
-            if count > 0:
-                st.success(f"已保存到 {sample_material} 数据集，共 {count} 条记录")
-    
-    # 参数组合限制
-    range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
-    total_combinations = 1
-    for v in range_params.values():
-        total_combinations *= len(v)
-    
-    max_combinations = st.slider(
-        "最大参数组合数 (过多会影响速度)", 
-        min_value=10, 
-        max_value=1000, 
-        value=min(100, total_combinations)
-    )
-    
-    if st.button("开始求解"):
-        valid = True
-        # 检查关键参数是否已输入
-        for var in ['rh0f', 'rh0b', 'rh0s']:
-            if isinstance(input_params.get(var), Symbol):
-                valid = False
-                st.error(f"{var}（初始密度）为必填参数，请输入值")
-        
-        # 检查其他参数输入有效性
-        for var, val in input_params.items():
-            if val is None:
-                valid = False
-                st.error(f"{var} 输入无效，请检查")
-        
-        if not valid:
-            return
+            st.success(f"求解完成，找到 {len(results)} 个符合物理规律的解（过滤了 {invalid_solutions} 个不合理解）")
             
-        # 生成参数组合
-        combinations = itertools.product(*[[(k, val) for val in v] for k, v in range_params.items()])
-        
-        # 截断过多的组合
-        combinations = list(combinations)
-        if len(combinations) > max_combinations:
-            st.warning(f"参数组合过多 ({len(combinations)}), 为提高速度已截断至 {max_combinations} 组")
-            combinations = combinations[:max_combinations]
-        
-        results = []
-        progress_bar = st.progress(0)
-        total = len(combinations)
-        count = 0
-        invalid_solutions = 0
-        
-        for combo in combinations:
-            count += 1
-            if count % 10 == 0 or count == total:
-                progress_bar.progress(count / total)
-                
-            current_subs = {sym_vars[k]: v for k, v in combo}
-            
-            # 构建方程组（基于Rankine-Hugoniot守恒关系）
-            eqs = [
-                # 飞片质量守恒: rho0f·Df = rhf·(Df - uf)
-                Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
-                # 飞片速度关系: w = Df + uf
-                Eq(sym_vars['w'] - (sym_vars['Df'] + sym_vars['uf']), 0),
-                # 基板质量守恒: rho0b·Db = rhb·(Db - ub)
-                Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
-                # 飞片动量守恒: Pf = rho0f·Df·uf
-                Eq(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*sym_vars['uf'], 0),
-                # 基板动量守恒: Pb = rho0b·Db·ub
-                Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*sym_vars['ub'], 0),
-                # 飞片能量守恒
-                Eq(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
-                # 基板能量守恒
-                Eq(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
-                # 飞片Hugoniot关系: Df = C0f + Sf·uf
-                Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*sym_vars['uf'], 0),
-                # 基板Hugoniot关系: Db = C0b + Sb·ub
-                Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*sym_vars['ub'], 0),
-                # 界面压力连续性: Pf = Pb
-                Eq(sym_vars['Pf'] - sym_vars['Pb'], 0),
-                # 界面粒子速度连续性: uf = ub
-                Eq(sym_vars['uf'] - sym_vars['ub'], 0)
-            ]
-            
-            # 添加温度相关方程
-            if calculate_temp:
-                eqs.append(Eq(sym_vars['Tf'] - 300 - (sym_vars['Ef'] - sym_vars['E0f'])*1e6 / 
-                             (Cv_values['f'] * (1 + sym_vars['gammaf']/2)), 0))
-                eqs.append(Eq(sym_vars['Tb'] - 300 - (sym_vars['Eb'] - sym_vars['E0b'])*1e6 / 
-                             (Cv_values['b'] * (1 + sym_vars['gammab']/2)), 0))
-            
-            # 样品相关方程（根据是否与基板同材料判断）
-            try:
-                same_material = (current_subs.get(sym_vars['rh0s'], sym_vars['rh0s']) == current_subs.get(sym_vars['rh0b'], sym_vars['rh0b']) and
-                                current_subs.get(sym_vars['C0s'], sym_vars['C0s']) == current_subs.get(sym_vars['C0b'], sym_vars['C0b']))
-            except:
-                same_material = False
-                
-            if same_material:
-                eqs += [
-                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),
-                    Eq(sym_vars['ub'] - sym_vars['us'], 0),
-                    Eq(sym_vars['rhb'] - sym_vars['rhs'], 0),
-                    Eq(sym_vars['Db'] - sym_vars['Ds'], 0),
-                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0)
-                ]
-                if calculate_temp:
-                    eqs += [Eq(sym_vars['Tb'] - sym_vars['Ts'], 0)]
-            else:
-                eqs += [
-                    Eq(sym_vars['rh0s']*sym_vars['Ds'] - sym_vars['rhb']*(sym_vars['Ds'] - sym_vars['us']), 0),
-                    Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*(2*sym_vars['ub'] - sym_vars['us']), 0),
-                    Eq(sym_vars['Ps'] - sym_vars['rh0s']*sym_vars['Ds']*sym_vars['us'], 0),
-                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0),
-                    Eq(sym_vars['Ds'] - sym_vars['C0s'] - sym_vars['Ss']*sym_vars['us'], 0),
-                    Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*(2*sym_vars['ub'] - sym_vars['us']), 0),
-                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),
-                    Eq(sym_vars['ub'] - sym_vars['us'], 0)
-                ]
-                if calculate_temp:
-                    eqs.append(Eq(sym_vars['Ts'] - 300 - (sym_vars['Es'] - sym_vars['E0s'])*1e6 / 
-                                 (Cv_values['s'] * (1 + sym_vars['gammas']/2)), 0))
-            
-            # 求解方程组
-            substituted_eqs = [eq.subs(current_subs) for eq in eqs]
-            remaining_vars = list(set().union(*[eq.free_symbols for eq in substituted_eqs]))
-            
-            if remaining_vars:
-                try:
-                    # 构建初始猜测值
-                    initial_guess = {}
-                    for var in remaining_vars:
-                        var_str = str(var)
-                        if var_str.startswith('rh'):
-                            initial_guess[var] = 8.0  # 密度初始猜测
-                        elif var_str in ['Df', 'Db', 'Ds', 'w']:
-                            initial_guess[var] = 5.0  # 速度初始猜测
-                        elif var_str in ['uf', 'ub', 'us']:
-                            initial_guess[var] = 2.0  # 粒子速度初始猜测
-                        elif var_str.startswith('P'):
-                            initial_guess[var] = 100.0  # 压力初始猜测
-                        elif var_str.startswith('T'):
-                            initial_guess[var] = 3000.0  # 温度初始猜测
-                        else:
-                            initial_guess[var] = 1.0
-                            
-                    solution = solve_numerically(substituted_eqs, {v:v for v in remaining_vars}, initial_guess)
-                    
-                    if solution:
-                        record = solution.copy()
-                        for k, v in current_subs.items():
-                            try:
-                                record[str(k)] = float(v)
-                            except:
-                                pass
-                        record['flyer_material'] = flyer_material
-                        record['base_material'] = base_material
-                        record['sample_material'] = sample_material
-                        results.append(record)
-                    else:
-                        invalid_solutions += 1
-                except Exception as e:
-                    st.warning(f"求解错误: {str(e)}")
-                    invalid_solutions += 1
-        
-        # 展示结果
-        if results:
-            st.success(f"求解完成，找到 {len(results)} 个有效解（过滤 {invalid_solutions} 个不合理解）")
-            
-            st.subheader("结果数据")
+            st.subheader("结果数据 (单位: rho=g/cm³, D=km/s, u=km/s, P=GPa, T=K)")
             df = pd.DataFrame(results)
             st.dataframe(df)
             
-            # 下载结果
             csv = df.to_csv(index=False)
             st.download_button(
                 label="下载结果数据",
                 data=csv,
-                file_name="manual_mode_results.csv",
+                file_name="manual_solver_results.csv",
                 mime="text/csv",
             )
             
-            # 结果可视化
             st.subheader("结果可视化")
             fig = plot_results_streamlit(results, calculate_temp)
             if fig:
                 st.pyplot(fig)
-                buf = BytesIO()
-                fig.savefig(buf, format='png', dpi=150)
-                buf.seek(0)
+                buf2 = BytesIO()
+                fig.savefig(buf2, format='png', dpi=150, bbox_inches='tight')
+                buf2.seek(0)
                 st.download_button(
                     label="下载图表",
-                    data=buf,
-                    file_name="manual_mode_plots.png",
+                    data=buf2,
+                    file_name="manual_analysis_with_temp.png" if calculate_temp else "manual_analysis_results.png",
                     mime="image/png"
                 )
             
-            # 保存到数据库
             if st.button("保存结果到数据库"):
                 count = save_results_to_db(results, sample_material)
                 if count > 0:
-                    st.success(f"已保存 {count} 条记录到 {sample_material} 数据集")
+                    st.success(f"已保存到 {sample_material} 数据集，共 {count} 条记录")
     
-    # 返回首页按钮
     if st.button("返回首页"):
         st.session_state.page = "home"
-        st.rerun()
+        st.rerun()  # 立即刷新页面
 
-# 主程序入口
+# 主函数
 def main():
-    # 初始化会话状态
+    # 初始化页面状态
     if 'page' not in st.session_state:
         st.session_state.page = "home"
     if 'confirm_delete' not in st.session_state:
@@ -2134,7 +2064,14 @@ def main():
     if 'previous_page' not in st.session_state:
         st.session_state.previous_page = "home"
     
-    # 页面路由
+    # 设置页面配置
+    st.set_page_config(
+        page_title="冲击波参数计算与分析系统",
+        page_icon="⚡",
+        layout="wide"
+    )
+    
+    # 根据页面状态显示不同内容
     if st.session_state.page == "home":
         home_page()
     elif st.session_state.page == "database_mode":
