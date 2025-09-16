@@ -1,13 +1,23 @@
-Cython==3.0.0
-streamlit>=1.24.0  # 改为兼容版本
+# 数据库相关
+pymysql==1.1.0
+sqlalchemy==2.0.25
+
+# Web框架
+streamlit>=1.24.0
+
+# 科学计算与符号运算
 sympy==1.12
-matplotlib==3.7.2
 numpy==1.26.2
 pandas==2.0.3
-scikit-learn>=1.3.2  # 改为兼容版本
+scikit-learn>=1.3.2
+
+# 可视化
+matplotlib==3.7.2
 kiwisolver>=1.3.2
 cycler>=0.10
 pyparsing>=3.0.7
+pillow>=10.0.0
+
+# 其他工具
 python-dateutil>=2.7
-pillow>=10.0.0  # 升级到兼容版本
-sqlalchemy==2.0.25
+Cython==3.0.0
