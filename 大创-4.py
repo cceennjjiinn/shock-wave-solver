@@ -1984,7 +1984,7 @@ def manual_mode_page():
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Df", "C0f", "uf", "w"] else 
-                         "GPa·cm³/g if var in ["E0f", "Ef"] else
+                         "GPa·cm³/g" if var in ["E0f", "Ef"] else
                          "GPa" if var == "Pf" else 
                          "K" if var == "Tf" else "无量纲",
                     desc="飞片初始密度（必须输入）" if var == "rh0f" else
