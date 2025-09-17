@@ -1992,7 +1992,7 @@ def manual_mode_page():
     with col1:
         flyer_material = st.text_input("飞片材料名称", value="铜", help="输入材料名称，例如：铜、铝")
     with col2:
-        base_material = st.text_input("基板材料名称", value    value="铝", help="输入材料名称，例如：铁、金")
+        base_material = st.text_input("基板材料名称", value="铝", help="输入材料名称，例如：铁、金")
     with col3:
         sample_material = st.text_input("样品材料名称", value="水", help="输入材料名称，例如：水、空气")
 
