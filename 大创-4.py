@@ -14,8 +14,8 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error
 from sympy import symbols, Symbol, Eq, simplify, solve
 
-# 设置matplotlib中文字体
-plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
+# 设置matplotlib中文字体，增强兼容性
+plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC", "Arial Unicode MS"]
 plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
 
 # 配置日志
@@ -171,7 +171,9 @@ def init_database():
                         exp_method TEXT, -- 实验方法/数据来源
                         gamma REAL,      -- 格吕奈森系数
                         T REAL,          -- 冲击温度 (K)
-                        INDEX idx_material (material)  -- 新增索引以加快查询
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, -- 新增时间戳
+                        INDEX idx_material (material),  -- 新增索引以加快查询
+                        INDEX idx_timestamp (timestamp)  -- 新增时间戳索引
                     )
                 """))
                 conn.commit()
@@ -199,7 +201,8 @@ def fix_database_schema():
                 ('gamma', 'REAL'),
                 ('T', 'REAL'),
                 ('V', 'REAL'),
-                ('V_V0', 'REAL')
+                ('V_V0', 'REAL'),
+                ('timestamp', 'DATETIME DEFAULT CURRENT_TIMESTAMP')
             ]
             
             for col_name, col_type in required_columns:
@@ -215,6 +218,17 @@ def fix_database_schema():
 # 先初始化数据库，再修复可能的表结构问题
 init_database()
 fix_database_schema()
+
+# 常用材料物理常数数据库
+MATERIAL_PROPERTIES = {
+    "铜": {"rho0": 8.96, "C0": 3.94, "S": 1.49, "gamma": 2.0, "Cv": 385},
+    "铝": {"rho0": 2.70, "C0": 5.32, "S": 1.37, "gamma": 2.1, "Cv": 900},
+    "铁": {"rho0": 7.87, "C0": 3.57, "S": 1.59, "gamma": 1.9, "Cv": 450},
+    "金": {"rho0": 19.3, "C0": 3.24, "S": 1.55, "gamma": 2.3, "Cv": 129},
+    "铅": {"rho0": 11.3, "C0": 2.03, "S": 1.58, "gamma": 2.5, "Cv": 128},
+    "水": {"rho0": 1.00, "C0": 1.48, "S": 1.99, "gamma": 0.5, "Cv": 4186},
+    "空气": {"rho0": 0.0012, "C0": 0.34, "S": 1.20, "gamma": 1.4, "Cv": 718}
+}
 
 # 物理合理性检查函数
 def validate_physical合理性(data, material_type="通用"):
@@ -267,7 +281,7 @@ def validate_physical合理性(data, material_type="通用"):
 @st.cache_data(ttl=3600)  # 缓存1小时
 def get_all_materials():
     try:
-        query = "SELECT DISTINCT material FROM shock_wave_all_data"
+        query = "SELECT DISTINCT material FROM shock_wave_all_data ORDER BY material"
         result = query_database(query)
         if result:
             return [row['material'] for row in result]
@@ -288,7 +302,7 @@ def get_material_data(material_name, fields=None):
                 fields.append('exp_method')
             fields = ', '.join(fields)  # 按需指定字段
             
-        query = f"SELECT {fields} FROM shock_wave_all_data WHERE material = :material"
+        query = f"SELECT {fields} FROM shock_wave_all_data WHERE material = :material ORDER BY timestamp DESC"
         result = query_database(query, {'material': material_name})
         
         # 转换为DataFrame
@@ -354,12 +368,13 @@ def save_results_to_db(results, material_name="Copper"):
                     'V_V0': result.get('V_V0', 0),
                     'exp_method': 'calculated',
                     'gamma': result.get('gammaf', 0),
-                    'T': result.get('Tf', 0) if 'Tf' in result else 0
+                    'T': result.get('Tf', 0) if 'Tf' in result else 0,
+                    'timestamp': datetime.now()
                 }
                 stmt = text("""
                     INSERT INTO shock_wave_all_data 
-                    (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T) 
-                    VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
+                    (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T, timestamp) 
+                    VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T, :timestamp)
                 """)
                 conn.execute(stmt, data)
                 count += 1
@@ -406,14 +421,15 @@ def save_input_parameters(input_params, material_name="Copper", exp_method="manu
             'V_V0': 0,  # 无法直接从输入参数获取
             'exp_method': exp_method,
             'gamma': data_dict['gamma'],
-            'T': data_dict['T']
+            'T': data_dict['T'],
+            'timestamp': datetime.now()
         }
         
         with db_engine.begin() as conn:
             stmt = text("""
                 INSERT INTO shock_wave_all_data 
-                (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T) 
-                VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
+                (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T, timestamp) 
+                VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T, :timestamp)
             """)
             conn.execute(stmt, data)
         logger.info(f"成功保存输入参数到 {material_name} 数据集")
@@ -458,12 +474,13 @@ def save_input_data_to_db(input_data, material_name, exp_method="manual_input"):
                 'V_V0': float(input_data.get('V_V0', 0)),
                 'exp_method': exp_method,
                 'gamma': float(input_data.get('gamma', 0)),
-                'T': float(input_data.get('T', 0))
+                'T': float(input_data.get('T', 0)),
+                'timestamp': datetime.now()
             }
             stmt = text("""
                 INSERT INTO shock_wave_all_data 
-                (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T) 
-                VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
+                (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T, timestamp) 
+                VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T, :timestamp)
             """)
             conn.execute(stmt, data)
         logger.info(f"成功保存输入数据到 {material_name} 数据集")
@@ -513,12 +530,13 @@ def bulk_import_data(df, material_name, exp_method="bulk_import"):
                     'V_V0': row.get('V_V0', 0),
                     'exp_method': exp_method,
                     'gamma': row.get('gamma', 0),
-                    'T': row.get('T', 0)
+                    'T': row.get('T', 0),
+                    'timestamp': datetime.now()
                 }
                 stmt = text("""
                     INSERT INTO shock_wave_all_data 
-                    (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T) 
-                    VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
+                    (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T, timestamp) 
+                    VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T, :timestamp)
                 """)
                 conn.execute(stmt, data)
                 count += 1
@@ -587,12 +605,29 @@ def view_database():
         with st.expander("数据库配置", expanded=False):
             if DB_TYPE == "mysql":
                 config = DB_CONFIG["mysql"]
-                st.text(f"主机: {config['host']}")
-                st.text(f"端口: {config['port']}")
-                st.text(f"数据库: {config['database']}")
-                st.text(f"用户: {config['user']}")
+                new_host = st.text_input("主机", config['host'], key="mysql_host")
+                new_port = st.number_input("端口", value=config['port'], min_value=1, max_value=65535, key="mysql_port")
+                new_db = st.text_input("数据库", config['database'], key="mysql_db")
+                new_user = st.text_input("用户", config['user'], key="mysql_user")
+                new_pwd = st.text_input("密码", config['password'], type="password", key="mysql_pwd")
+                
+                if st.button("更新MySQL配置"):
+                    DB_CONFIG["mysql"] = {
+                        "host": new_host,
+                        "port": new_port,
+                        "database": new_db,
+                        "user": new_user,
+                        "password": new_pwd,
+                        "charset": "utf8mb4"
+                    }
+                    db_engine = create_db_engine(DB_TYPE)
+                    st.success("MySQL配置已更新")
             else:
-                st.text(f"数据库文件: {DB_CONFIG['sqlite']['path']}")
+                new_path = st.text_input("数据库文件路径", DB_CONFIG['sqlite']['path'], key="sqlite_path")
+                if st.button("更新SQLite配置"):
+                    DB_CONFIG["sqlite"]["path"] = new_path
+                    db_engine = create_db_engine(DB_TYPE)
+                    st.success("SQLite配置已更新")
         
         # 批量操作区域
         st.subheader("批量数据操作")
@@ -601,7 +636,7 @@ def view_database():
         # 批量导入部分
         with col1:
             st.subheader("批量导入数据")
-            new_material = st.text_input("材料名称", help="输入要导入数据的材料名称，使用英文")
+            new_material = st.text_input("材料名称", help="输入要导入数据的材料名称")
             uploaded_file = st.file_uploader("选择CSV文件", type="csv")
             exp_method = st.text_input("实验方法/数据来源", value="bulk_import")
             
@@ -1363,6 +1398,20 @@ def home_page():
        - Hugoniot关系：Us = C₀ + S·Up（C₀为体声速，S通常在1.3-2.0之间）
     """)
     
+    # 显示支持的材料类型
+    with st.expander("支持的材料及其典型参数", expanded=False):
+        mat_data = []
+        for mat, props in MATERIAL_PROPERTIES.items():
+            mat_data.append({
+                "材料": mat,
+                "初始密度 (g/cm³)": props["rho0"],
+                "体声速 C0 (km/s)": props["C0"],
+                "Hugoniot参数 S": props["S"],
+                "格吕奈森系数 γ": props["gamma"],
+                "比热容 Cv (J/(kg·K))": props["Cv"]
+            })
+        st.dataframe(pd.DataFrame(mat_data))
+    
     # 查看数据库快捷入口
     if st.button("查看数据库"):
         st.session_state.page = "view_database"
@@ -1399,6 +1448,17 @@ def database_mode_page():
     materials = get_all_materials()
     if not materials:
         st.error("数据库中没有可用材料")
+        # 提供创建新材料的选项
+        new_mat_name = st.text_input("创建新材料", help="输入新材料名称")
+        if st.button("确认创建") and new_mat_name:
+            # 向数据库添加一条空记录以创建新材料
+            with db_engine.begin() as conn:
+                conn.execute(text("""
+                    INSERT INTO shock_wave_all_data (material, exp_method) 
+                    VALUES (:material, 'system')
+                """), {'material': new_mat_name})
+            st.success(f"已创建新材料: {new_mat_name}")
+            st.rerun()
         return
     
     col1, col2, col3 = st.columns(3)
@@ -1462,14 +1522,18 @@ def database_mode_page():
         st.subheader("比热容设置（用于温度计算）")
         col1, col2, col3 = st.columns(3)
         with col1:
+            # 尝试从材料属性数据库获取默认值
+            default_cv = MATERIAL_PROPERTIES.get(flyer_material, {}).get("Cv", 385.0)
             Cv_values['f'] = st.number_input(f"飞片比热容 Cv (J/(kg·K)) ({flyer_material})", 
-                                            value=385.0, min_value=1.0, help="铜约为385，铝约为900")
+                                            value=default_cv, min_value=1.0, help="铜约为385，铝约为900")
         with col2:
+            default_cv = MATERIAL_PROPERTIES.get(base_material, {}).get("Cv", 385.0)
             Cv_values['b'] = st.number_input(f"基板比热容 Cv (J/(kg·K)) ({base_material})", 
-                                            value=385.0, min_value=1.0)
+                                            value=default_cv, min_value=1.0)
         with col3:
+            default_cv = MATERIAL_PROPERTIES.get(sample_material, {}).get("Cv", 385.0)
             Cv_values['s'] = st.number_input(f"样品比热容 Cv (J/(kg·K)) ({sample_material})", 
-                                            value=385.0, min_value=1.0)
+                                            value=default_cv, min_value=1.0)
     
     # 飞片参数
     with st.expander(f"{flyer_material} 飞片参数", expanded=True):
@@ -1509,26 +1573,24 @@ def database_mode_page():
                 
             with cols[i % 3]:
                 default_val = None
-                if default_params["f"] and var in ["rh0f", "C0f", "Sf"]:
+                # 优先从材料属性数据库获取默认值
+                if var == "rh0f":
+                    default_val = MATERIAL_PROPERTIES.get(flyer_material, {}).get("rho0", 8.96)
+                elif var == "C0f":
+                    default_val = MATERIAL_PROPERTIES.get(flyer_material, {}).get("C0", None)
+                elif var == "Sf":
+                    default_val = MATERIAL_PROPERTIES.get(flyer_material, {}).get("S", None)
+                elif var == "gammaf":
+                    default_val = MATERIAL_PROPERTIES.get(flyer_material, {}).get("gamma", 2.0)
+                
+                # 如果材料属性数据库中没有，则使用拟合值
+                if default_val is None and default_params["f"]:
                     if var == "rh0f":
                         default_val = default_params["f"]["rho0"]
                     elif var == "C0f":
                         default_val = default_params["f"]["C0"]
                     elif var == "Sf":
                         default_val = default_params["f"]["S"]
-                elif var == "gammaf":
-                    # 尝试从数据中获取平均格吕奈森系数
-                    if not flyer_df.empty and 'gamma' in flyer_df.columns:
-                        gamma_vals = flyer_df['gamma'].dropna()
-                        if len(gamma_vals) > 0:
-                            default_val = gamma_vals.mean()
-                        else:
-                            default_val = 2.0
-                    else:
-                        default_val = 2.0  # 默认格吕奈森系数
-                # 为初始密度设置默认值和更强的提示
-                if var == "rh0f" and default_val is None:
-                    default_val = 8.96  # 铜的默认密度
                 
                 val = get_input_streamlit(
                     label=var,
@@ -1553,23 +1615,24 @@ def database_mode_page():
                 
             with cols[i % 3]:
                 default_val = None
-                if default_params["b"] and var in ["rh0b", "C0b", "Sb"]:
+                # 优先从材料属性数据库获取默认值
+                if var == "rh0b":
+                    default_val = MATERIAL_PROPERTIES.get(base_material, {}).get("rho0", 2.7)
+                elif var == "C0b":
+                    default_val = MATERIAL_PROPERTIES.get(base_material, {}).get("C0", None)
+                elif var == "Sb":
+                    default_val = MATERIAL_PROPERTIES.get(base_material, {}).get("S", None)
+                elif var == "gammab":
+                    default_val = MATERIAL_PROPERTIES.get(base_material, {}).get("gamma", 2.0)
+                
+                # 如果材料属性数据库中没有，则使用拟合值
+                if default_val is None and default_params["b"]:
                     if var == "rh0b":
                         default_val = default_params["b"]["rho0"]
                     elif var == "C0b":
                         default_val = default_params["b"]["C0"]
                     elif var == "Sb":
                         default_val = default_params["b"]["S"]
-                elif var == "gammab":
-                    # 尝试从数据中获取平均格吕奈森系数
-                    if not base_df.empty and 'gamma' in base_df.columns:
-                        gamma_vals = base_df['gamma'].dropna()
-                        if len(gamma_vals) > 0:
-                            default_val = gamma_vals.mean()
-                        else:
-                            default_val = 2.0
-                    else:
-                        default_val = 2.0  # 默认格吕奈森系数
                 
                 val = get_input_streamlit(
                     label=var,
@@ -1606,23 +1669,24 @@ def database_mode_page():
                 
             with cols[i % 3]:
                 default_val = None
-                if default_params["s"] and var in ["rh0s", "C0s", "Ss"]:
+                # 优先从材料属性数据库获取默认值
+                if var == "rh0s":
+                    default_val = MATERIAL_PROPERTIES.get(sample_material, {}).get("rho0", 8.96)
+                elif var == "C0s":
+                    default_val = MATERIAL_PROPERTIES.get(sample_material, {}).get("C0", None)
+                elif var == "Ss":
+                    default_val = MATERIAL_PROPERTIES.get(sample_material, {}).get("S", None)
+                elif var == "gammas":
+                    default_val = MATERIAL_PROPERTIES.get(sample_material, {}).get("gamma", 2.0)
+                
+                # 如果材料属性数据库中没有，则使用拟合值
+                if default_val is None and default_params["s"]:
                     if var == "rh0s":
                         default_val = default_params["s"]["rho0"]
                     elif var == "C0s":
                         default_val = default_params["s"]["C0"]
                     elif var == "Ss":
                         default_val = default_params["s"]["S"]
-                elif var == "gammas":
-                    # 尝试从数据中获取平均格吕奈森系数
-                    if not sample_df.empty and 'gamma' in sample_df.columns:
-                        gamma_vals = sample_df['gamma'].dropna()
-                        if len(gamma_vals) > 0:
-                            default_val = gamma_vals.mean()
-                        else:
-                            default_val = 2.0
-                    else:
-                        default_val = 2.0  # 默认格吕奈森系数
                 
                 val = get_input_streamlit(
                     label=var,
@@ -1928,84 +1992,116 @@ def manual_mode_page():
     with col1:
         flyer_material = st.text_input("飞片材料名称", value="铜", help="输入材料名称，例如：铜、铝")
     with col2:
-        base_material = st.text_input("基板材料名称", value="铝", help="输入材料名称，例如：铜、铝")
+        base_material = st.text_input("基板材料名称", value    value="铝", help="输入材料名称，例如：铁、金")
     with col3:
-        sample_material = st.text_input("样品材料名称", value="铜", help="输入材料名称，例如：铜、铝")
-    
-    # 飞片与基板界面速度关系说明 - 更新为正确的物理关系
-    st.info("""
-    飞片冲击关系：飞片速度w与粒子速度uf的关系为w = Df + uf
-    这是从实验室坐标系中的运动学关系和质量守恒方程推导得出的
-    """)
-    
+        sample_material = st.text_input("样品材料名称", value="水", help="输入材料名称，例如：水、空气")
+
     # 比热容设置（仅当计算温度时显示）
     Cv_values = {}
     if calculate_temp:
         st.subheader("比热容设置（用于温度计算）")
         col1, col2, col3 = st.columns(3)
         with col1:
-            Cv_values['f'] = st.number_input(f"飞片比热容 Cv (J/(kg·K)) ({flyer_material})", 
-                                            value=385.0, min_value=1.0, help="铜约为385，铝约为900")
+            # 从材料属性数据库获取默认值
+            default_cv = MATERIAL_PROPERTIES.get(flyer_material, {}).get("Cv", 385.0)
+            Cv_values['f'] = st.number_input(
+                f"飞片比热容 Cv (J/(kg·K)) ({flyer_material})", 
+                value=default_cv, min_value=1.0, 
+                help="铜约为385，铝约为900，水约为4186"
+            )
         with col2:
-            Cv_values['b'] = st.number_input(f"基板比热容 Cv (J/(kg·K)) ({base_material})", 
-                                            value=385.0, min_value=1.0)
+            default_cv = MATERIAL_PROPERTIES.get(base_material, {}).get("Cv", 385.0)
+            Cv_values['b'] = st.number_input(
+                f"基板比热容 Cv (J/(kg·K)) ({base_material})", 
+                value=default_cv, min_value=1.0
+            )
         with col3:
-            Cv_values['s'] = st.number_input(f"样品比热容 Cv (J/(kg·K)) ({sample_material})", 
-                                            value=385.0, min_value=1.0)
-    
-    exp_method = st.text_input("实验方法/数据来源", value="manual_input", help="记录数据来源，例如：iml、ssp、实验设备、文献等")
-    
-    # 参数输入
+            default_cv = MATERIAL_PROPERTIES.get(sample_material, {}).get("Cv", 385.0)
+            Cv_values['s'] = st.number_input(
+                f"样品比热容 Cv (J/(kg·K)) ({sample_material})", 
+                value=default_cv, min_value=1.0
+            )
+
+    # 参数定义
     variables = {
         "f": ["rh0f", "rhf", "Df", "C0f", "Sf", "E0f", "Ef", "uf", "w", "Pf", "gammaf", "Tf"],
         "b": ["rh0b", "rhb", "Db", "C0b", "Sb", "E0b", "Eb", "ub", "Pb", "gammab", "Tb"],
         "s": ["rh0s", "rhs", "Ds", "C0s", "Ss", "E0s", "Es", "us", "Ps", "gammas", "Ts"]
     }
-    
+
     input_params = {}
     sym_vars = {}
-    
-    # 飞片参数
+
+    # 飞片与基板界面关系说明
+    st.info("""
+    核心物理关系：
+    - 质量守恒：ρ₀·Us = ρ·(Us - Up)
+    - 动量守恒：P = ρ₀·Us·Up
+    - Hugoniot关系：Us = C₀ + S·Up
+    - 飞片速度关系：w = Us + Up（实验室坐标系）
+    """)
+
+    # 飞片参数输入
     with st.expander(f"{flyer_material} 飞片参数", expanded=True):
         cols = st.columns(3)
+        var_descs = {
+            "rh0f": "初始密度（必须输入）",
+            "rhf": "压缩密度",
+            "Df": "冲击波速度（Us）",
+            "C0f": "体声速（Hugoniot拟合）",
+            "Sf": "Hugoniot参数S（无量纲）",
+            "E0f": "初始内能密度",
+            "Ef": "压缩后内能密度",
+            "uf": "粒子速度（Up）",
+            "w": "飞片初始冲击速度",
+            "Pf": "冲击压力",
+            "gammaf": "格吕奈森系数（温度计算需要）",
+            "Tf": "冲击温度 (K)"
+        }
+        var_units = {
+            "rh0f": "g/cm³",
+            "rhf": "g/cm³",
+            "Df": "km/s",
+            "C0f": "km/s",
+            "Sf": "无量纲",
+            "E0f": "GPa·cm³/g",
+            "Ef": "GPa·cm³/g",
+            "uf": "km/s",
+            "w": "km/s",
+            "Pf": "GPa",
+            "gammaf": "无量纲",
+            "Tf": "K"
+        }
+        
         for i, var in enumerate(variables["f"]):
             # 温度参数仅在计算温度时显示
             if var.startswith('T') and not calculate_temp:
                 continue
                 
             with cols[i % 3]:
-                default_val = 2.0 if var == "gammaf" else None
-                # 为初始密度设置默认值
+                # 从材料属性数据库获取默认值
+                default_val = None
                 if var == "rh0f":
-                    default_val = 8.96  # 铜的默认密度
-                
+                    default_val = MATERIAL_PROPERTIES.get(flyer_material, {}).get("rho0", 8.96)
+                elif var == "C0f":
+                    default_val = MATERIAL_PROPERTIES.get(flyer_material, {}).get("C0", 3.94)
+                elif var == "Sf":
+                    default_val = MATERIAL_PROPERTIES.get(flyer_material, {}).get("S", 1.49)
+                elif var == "gammaf":
+                    default_val = MATERIAL_PROPERTIES.get(flyer_material, {}).get("gamma", 2.0)
+
                 val = get_input_streamlit(
                     label=var,
                     var_name=var,
-                    key=var,
+                    key=f"manual_f_{var}",
                     default=default_val,
-                    unit="g/cm³" if var.startswith("rh") else 
-                         "km/s" if var in ["Df", "C0f", "uf", "w"] else 
-                         "GPa·cm³/g" if var in ["E0f", "Ef"] else
-                         "GPa" if var == "Pf" else 
-                         "K" if var == "Tf" else "无量纲",
-                    desc="飞片初始密度（必须输入）" if var == "rh0f" else
-                         "飞片压缩密度" if var == "rhf" else
-                         "飞片冲击波速度（对应Us）" if var == "Df" else
-                         "飞片体声速（Hugoniot拟合）" if var == "C0f" else
-                         "飞片Hugoniot参数S（无量纲）" if var == "Sf" else
-                         "飞片初始内能密度" if var == "E0f" else
-                         "飞片压缩后内能密度" if var == "Ef" else
-                         "飞片粒子速度（对应Up）" if var == "uf" else
-                         "飞片初始冲击速度" if var == "w" else
-                         "飞片冲击压力" if var == "Pf" else
-                         "飞片格吕奈森系数" if var == "gammaf" else
-                         "飞片冲击温度"
+                    unit=var_units[var],
+                    desc=var_descs[var]
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
-    
-    # 基板参数
+
+    # 基板参数输入
     with st.expander(f"{base_material} 基板参数", expanded=True):
         cols = st.columns(3)
         for i, var in enumerate(variables["b"]):
@@ -2014,15 +2110,21 @@ def manual_mode_page():
                 continue
                 
             with cols[i % 3]:
-                default_val = 2.0 if var == "gammab" else None
-                # 为初始密度设置默认值
+                # 从材料属性数据库获取默认值
+                default_val = None
                 if var == "rh0b":
-                    default_val = 2.7  # 铝的默认密度
-                    
+                    default_val = MATERIAL_PROPERTIES.get(base_material, {}).get("rho0", 2.70)
+                elif var == "C0b":
+                    default_val = MATERIAL_PROPERTIES.get(base_material, {}).get("C0", 5.32)
+                elif var == "Sb":
+                    default_val = MATERIAL_PROPERTIES.get(base_material, {}).get("S", 1.37)
+                elif var == "gammab":
+                    default_val = MATERIAL_PROPERTIES.get(base_material, {}).get("gamma", 2.1)
+
                 val = get_input_streamlit(
                     label=var,
                     var_name=var,
-                    key=f"b_{var}",
+                    key=f"manual_b_{var}",
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Db", "C0b", "ub"] else 
@@ -2030,21 +2132,12 @@ def manual_mode_page():
                          "GPa" if var == "Pb" else 
                          "K" if var == "Tb" else "无量纲",
                     desc="基板初始密度（必须输入）" if var == "rh0b" else
-                         "基板压缩密度" if var == "rhb" else
-                         "基板冲击波速度" if var == "Db" else
-                         "基板体声速" if var == "C0b" else
-                         "基板Hugoniot参数" if var == "Sb" else
-                         "基板初始内能密度" if var == "E0b" else
-                         "基板压缩后内能密度" if var == "Eb" else
-                         "基板粒子速度" if var == "ub" else
-                         "基板冲击压力" if var == "Pb" else
-                         "基板格吕奈森系数" if var == "gammab" else
-                         "基板冲击温度"
+                         f"基板{var[2:]}参数"
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
 
-    # 样品参数
+    # 样品参数输入
     with st.expander(f"{sample_material} 样品参数", expanded=True):
         cols = st.columns(3)
         for i, var in enumerate(variables["s"]):
@@ -2053,15 +2146,21 @@ def manual_mode_page():
                 continue
                 
             with cols[i % 3]:
-                default_val = 2.0 if var == "gammas" else None
-                # 为初始密度设置默认值
+                # 从材料属性数据库获取默认值
+                default_val = None
                 if var == "rh0s":
-                    default_val = 8.96  # 铜的默认密度
-                    
+                    default_val = MATERIAL_PROPERTIES.get(sample_material, {}).get("rho0", 1.00)
+                elif var == "C0s":
+                    default_val = MATERIAL_PROPERTIES.get(sample_material, {}).get("C0", 1.48)
+                elif var == "Ss":
+                    default_val = MATERIAL_PROPERTIES.get(sample_material, {}).get("S", 1.99)
+                elif var == "gammas":
+                    default_val = MATERIAL_PROPERTIES.get(sample_material, {}).get("gamma", 0.5)
+
                 val = get_input_streamlit(
                     label=var,
                     var_name=var,
-                    key=f"s_{var}",
+                    key=f"manual_s_{var}",
                     default=default_val,
                     unit="g/cm³" if var.startswith("rh") else 
                          "km/s" if var in ["Ds", "C0s", "us"] else 
@@ -2069,40 +2168,33 @@ def manual_mode_page():
                          "GPa" if var == "Ps" else
                          "K" if var == "Ts" else "无量纲",
                     desc="样品初始密度（必须输入）" if var == "rh0s" else
-                         "样品压缩密度" if var == "rhs" else
-                         "样品冲击波速度" if var == "Ds" else
-                         "样品体声速" if var == "C0s" else
-                         "样品Hugoniot参数S" if var == "Ss" else
-                         "样品初始内能密度" if var == "E0s" else
-                         "样品压缩后内能密度" if var == "Es" else
-                         "样品粒子速度" if var == "us" else
-                         "样品冲击压力" if var == "Ps" else
-                         "样品格吕奈森系数" if var == "gammas" else
-                         "样品冲击温度"
+                         f"样品{var[2:]}参数"
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
 
-    # 保存当前参数按钮
+    # 保存参数按钮
     col_save, col_other = st.columns([1, 3])
     with col_save:
         if st.button("保存当前参数到数据库"):
-            # 准备输入数据字典
-            input_data = {
-                'rho0': input_params.get('rh0f'),
-                'Us': input_params.get('Df'),
-                'Up': input_params.get('uf'),
-                'P': input_params.get('Pf'),
-                'gamma': input_params.get('gammaf'),
-                'T': input_params.get('Tf') if calculate_temp else None
+            # 整合材料名称和参数
+            save_data = {
+                'material': sample_material,
+                'rho0': input_params.get('rh0s'),
+                'Us': input_params.get('Ds'),
+                'Up': input_params.get('us'),
+                'P': input_params.get('Ps'),
+                'gamma': input_params.get('gammas'),
+                'T': input_params.get('Ts') if calculate_temp else None
             }
             # 过滤符号变量（未知数）
-            input_data = {k: v[0] if isinstance(v, list) else v for k, v in input_data.items() 
+            save_data = {k: v[0] if isinstance(v, list) and len(v) > 0 else v 
+                         for k, v in save_data.items() 
                          if not isinstance(v, Symbol) and v is not None}
             
-            count = save_input_data_to_db(input_data, sample_material, exp_method)
+            count = save_input_data_to_db(save_data, sample_material, "manual_input")
             if count > 0:
-                st.success(f"已保存到 {sample_material} 数据集，共 {count} 条记录")
+                st.success(f"已保存到 {sample_material} 数据集")
 
     # 参数组合限制
     range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
@@ -2119,35 +2211,30 @@ def manual_mode_page():
 
     if st.button("开始求解"):
         valid = True
-        # 检查关键参数是否已输入
+        # 检查必填参数
         for var in ['rh0f', 'rh0b', 'rh0s']:
-            if isinstance(input_params.get(var), Symbol):
+            if isinstance(input_params.get(var), Symbol) or input_params.get(var) is None:
                 valid = False
                 st.error(f"{var}（初始密度）是必填参数，请输入值")
         
-        # 检查其他参数输入有效性
-        for var, val in input_params.items():
-            if val is None:
-                valid = False
-                st.error(f"{var} 输入无效，请检查")
-        
         if not valid:
-            return
-            
+            st.stop()
+
+        # 生成参数组合
         combinations = itertools.product(*[[(k, val) for val in v] for k, v in range_params.items()])
+        combinations = list(combinations)
         
         # 截断过多的组合
-        combinations = list(combinations)
         if len(combinations) > max_combinations:
-            st.warning(f"参数组合过多（{len(combinations)}），为提高速度已截断至 {max_combinations} 个")
+            st.warning(f"参数组合过多（{len(combinations)}），已截断至 {max_combinations} 个")
             combinations = combinations[:max_combinations]
-        
+
         results = []
         progress_bar = st.progress(0)
         total = len(combinations)
         count = 0
         invalid_solutions = 0
-        
+
         for combo in combinations:
             count += 1
             if count % 10 == 0 or count == total:
@@ -2155,45 +2242,41 @@ def manual_mode_page():
                 
             current_subs = {sym_vars[k]: v for k, v in combo}
             
-            # 方程组（与数据库模式相同）
+            # 构建方程组（与数据库模式相同的物理方程）
             eqs = [
-                # 飞片质量守恒: rho0f·Df = rhf·(Df - uf)
+                # 飞片质量守恒
                 Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
-                # 飞片速度与粒子速度关系: w = Df + uf
+                # 飞片速度关系
                 Eq(sym_vars['w'] - (sym_vars['Df'] + sym_vars['uf']), 0),
-                # 基板质量守恒: rho0b·Db = rhb·(Db - ub)
+                # 基板质量守恒
                 Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
-                # 飞片动量守恒: Pf = rho0f·Df·uf
+                # 飞片动量守恒
                 Eq(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*sym_vars['uf'], 0),
-                # 基板动量守恒: Pb = rho0b·Db·ub
+                # 基板动量守恒
                 Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*sym_vars['ub'], 0),
                 # 飞片能量守恒
                 Eq(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
                 # 基板能量守恒
                 Eq(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
-                # 飞片Hugoniot关系: Df = C0f + Sf·uf
+                # 飞片Hugoniot关系
                 Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*sym_vars['uf'], 0),
-                # 基板Hugoniot关系: Db = C0b + Sb·ub
+                # 基板Hugoniot关系
                 Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*sym_vars['ub'], 0),
-                # 界面压力连续性: Pf = Pb
+                # 界面压力连续性
                 Eq(sym_vars['Pf'] - sym_vars['Pb'], 0),
-                # 界面粒子速度连续性: uf = ub
+                # 界面粒子速度连续性
                 Eq(sym_vars['uf'] - sym_vars['ub'], 0)
             ]
             
-            # 添加温度相关方程
+            # 添加温度方程
             if calculate_temp:
                 eqs.append(Eq(sym_vars['Tf'] - 300 - (sym_vars['Ef'] - sym_vars['E0f'])*1e6 / 
                              (Cv_values['f'] * (1 + sym_vars['gammaf']/2)), 0))
                 eqs.append(Eq(sym_vars['Tb'] - 300 - (sym_vars['Eb'] - sym_vars['E0b'])*1e6 / 
                              (Cv_values['b'] * (1 + sym_vars['gammab']/2)), 0))
-            
+
             # 判断样品与基板是否为同一材料
-            try:
-                is_same_material = (sample_material.lower() == base_material.lower())
-            except:
-                is_same_material = False
-                
+            is_same_material = (sample_material == base_material)
             if is_same_material:
                 # 样品与基板参数一致
                 eqs += [
@@ -2203,14 +2286,13 @@ def manual_mode_page():
                     Eq(sym_vars['Db'] - sym_vars['Ds'], 0),
                     Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0)
                 ]
-                
                 if calculate_temp:
                     eqs += [
                         Eq(sym_vars['Tb'] - sym_vars['Ts'], 0),
                         Eq(sym_vars['gammab'] - sym_vars['gammas'], 0)
                     ]
             else:
-                # 样品与基板为不同材料
+                # 样品独立计算
                 eqs += [
                     Eq(sym_vars['rh0s']*sym_vars['Ds'] - sym_vars['rhb']*(sym_vars['Ds'] - sym_vars['us']), 0),
                     Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*(2*sym_vars['ub'] - sym_vars['us']), 0),
@@ -2221,86 +2303,73 @@ def manual_mode_page():
                     Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),
                     Eq(sym_vars['ub'] - sym_vars['us'], 0)
                 ]
-                
                 if calculate_temp:
                     eqs.append(Eq(sym_vars['Ts'] - 300 - (sym_vars['Es'] - sym_vars['E0s'])*1e6 / 
                                  (Cv_values['s'] * (1 + sym_vars['gammas']/2)), 0))
-            
+
+            # 求解方程组
             substituted_eqs = [eq.subs(current_subs) for eq in eqs]
             remaining_vars = list(set().union(*[eq.free_symbols for eq in substituted_eqs]))
             
-            if not remaining_vars:
-                continue
-                
-            try:
-                # 构建初始猜测值
-                initial_guess = {}
-                known_params = {}
-                for k, v in current_subs.items():
-                    try:
-                        known_params[str(k)] = float(v)
-                    except:
-                        pass
-                
-                for var in remaining_vars:
-                    var_str = str(var)
-                    if var_str == 'w' and 'Df' in known_params and 'uf' in known_params:
-                        initial_guess[var] = known_params['Df'] + known_params['uf']
-                    elif var_str == 'Df' and 'w' in known_params and 'uf' in known_params:
-                        initial_guess[var] = known_params['w'] - known_params['uf']
-                    elif var_str == 'uf' and 'w' in known_params and 'Df' in known_params:
-                        initial_guess[var] = known_params['w'] - known_params['Df']
-                    elif var_str == 'Pf' and 'rh0f' in known_params and 'Df' in known_params and 'uf' in known_params:
-                        initial_guess[var] = known_params['rh0f'] * known_params['Df'] * known_params['uf']
-                    elif var_str.startswith(('rh0', 'rh')):
-                        initial_guess[var] = known_params.get('rh0f', 8.0)
-                    elif var_str.startswith(('D', 'C0', 'u')):
-                        initial_guess[var] = known_params.get('w', 10.0) / 2
-                    elif var_str == 'w':
-                        initial_guess[var] = 10.0
-                    elif var_str.startswith('P'):
-                        initial_guess[var] = 100.0
-                    elif var_str.startswith('gamma'):
-                        initial_guess[var] = 2.0
-                    elif var_str.startswith('T'):
-                        initial_guess[var] = 3000.0
+            if remaining_vars:
+                try:
+                    # 构建初始猜测值
+                    initial_guess = {}
+                    for var in remaining_vars:
+                        var_str = str(var)
+                        if var_str.startswith('rh'):
+                            initial_guess[var] = 8.0  # 密度初始猜测
+                        elif var_str.startswith(('D', 'u', 'w')):
+                            initial_guess[var] = 5.0  # 速度初始猜测
+                        elif var_str.startswith('P'):
+                            initial_guess[var] = 100.0  # 压力初始猜测
+                        elif var_str.startswith('gamma'):
+                            initial_guess[var] = 2.0  # 格吕奈森系数
+                        elif var_str.startswith('T'):
+                            initial_guess[var] = 3000.0  # 温度初始猜测
+                        else:
+                            initial_guess[var] = 1.0
+
+                    solution = solve_numerically(substituted_eqs, {v:v for v in remaining_vars}, initial_guess)
+                    
+                    if solution:
+                        record = solution.copy()
+                        for k, v in current_subs.items():
+                            try:
+                                record[str(k)] = float(v)
+                            except:
+                                pass
+                        record['flyer_material'] = flyer_material
+                        record['base_material'] = base_material
+                        record['sample_material'] = sample_material
+                        results.append(record)
                     else:
-                        initial_guess[var] = 1.0
-                
-                solution = solve_numerically(substituted_eqs, {v:v for v in remaining_vars}, initial_guess)
-                
-                if solution:
-                    record = solution.copy()
-                    for k, v in current_subs.items():
-                        try:
-                            record[str(k)] = float(v)
-                        except:
-                            pass
-                    record['flyer_material'] = flyer_material
-                    record['base_material'] = base_material
-                    record['sample_material'] = sample_material
-                    results.append(record)
-                else:
+                        invalid_solutions += 1
+                except Exception as e:
+                    st.warning(f"求解错误: {str(e)}")
                     invalid_solutions += 1
-            except Exception as e:
-                st.warning(f"求解错误: {str(e)}")
-                invalid_solutions += 1
-        
+
+        # 展示结果
         if results:
             st.success(f"求解完成，找到 {len(results)} 个有效解（过滤 {invalid_solutions} 个不合理解）")
             
             st.subheader("结果数据")
             df = pd.DataFrame(results)
-            st.dataframe(df)
+            # 选择主要参数显示
+            main_cols = ['w', 'Df', 'uf', 'Pf', 'rhf', 'Tf', 'Db', 'ub', 'Pb', 'rhb', 'Tb']
+            display_cols = [col for col in main_cols if col in df.columns]
+            st.dataframe(df[display_cols])
             
+            # 下载结果
             csv = df.to_csv(index=False)
             st.download_button(
                 label="下载结果数据",
                 data=csv,
-                file_name="manual_solver_results.csv",
+                file_name="manual_mode_results.csv",
                 mime="text/csv",
             )
             
+            # 结果可视化
             st.subheader("结果可视化")
             fig = plot_results_streamlit(results, calculate_temp)
             if fig:
@@ -2311,10 +2380,11 @@ def manual_mode_page():
                 st.download_button(
                     label="下载图表",
                     data=buf,
-                    file_name="manual_analysis_results.png",
+                    file_name="manual_mode_analysis.png",
                     mime="image/png"
                 )
             
+            # 保存到数据库
             if st.button("保存结果到数据库"):
                 count = save_results_to_db(results, sample_material)
                 if count > 0:
@@ -2322,6 +2392,7 @@ def manual_mode_page():
         else:
             st.warning(f"未找到有效解，尝试了 {total} 组参数")
 
+    # 返回主页按钮
     if st.button("返回主页"):
         st.session_state.page = "home"
         st.rerun()
@@ -2335,8 +2406,10 @@ def main():
         st.session_state.confirm_delete = False
     if 'confirm_clear' not in st.session_state:
         st.session_state.confirm_clear = False
-        
-    # 根据当前页面状态显示不同内容
+    if 'previous_page' not in st.session_state:
+        st.session_state.previous_page = "home"
+
+    # 根据当前页面状态显示相应内容
     if st.session_state.page == "home":
         home_page()
     elif st.session_state.page == "database_mode":
@@ -2345,9 +2418,9 @@ def main():
         manual_mode_page()
     elif st.session_state.page == "view_database":
         view_database()
-        # 返回按钮
+        # 显示返回按钮
         if st.button("返回上一页"):
-            st.session_state.page = st.session_state.get('previous_page', 'home')
+            st.session_state.page = st.session_state.previous_page
             st.rerun()
 
 if __name__ == "__main__":
