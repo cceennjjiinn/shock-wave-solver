@@ -1,30 +1,31 @@
 import streamlit as st
-import pandas as pd
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
-from io import BytesIO
-import itertools
-import traceback
-from datetime import datetime
-from sqlalchemy import create_engine, text, event
-from sqlalchemy.engine import Engine
+from sympy import symbols, Eq, solve, simplify, Symbol
 from scipy.optimize import least_squares
 from scipy.stats import linregress
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error
-from sympy import symbols, Symbol, Eq, simplify, solve
+import sqlite3
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
+import traceback
+import logging
+from datetime import datetime
+import itertools
+from io import BytesIO
 
-# 设置matplotlib中文字体
+# 设置中文字体
 plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
-plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
+plt.rcParams["axes.unicode_minus"] = False  # 正确显示负号
 
 # 配置日志
-import logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("shock_wave_calculator.log"),
+        logging.FileHandler("shock_wave_calculator.log", encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -40,37 +41,32 @@ DB_CONFIG = {
         "port": 3306,
         "database": "shock_wave_db",
         "user": "root",
-        "password": "password",
-        "charset": "utf8mb4"
+        "password": "password"  # 实际使用时应修改为真实密码
     }
 }
 
-# 全局数据库类型设置
-DB_TYPE = "sqlite"  # 默认使用SQLite
+# 默认数据库类型
+DB_TYPE = "sqlite"
 
-# 创建数据库引擎 - 支持MySQL和SQLite
-def create_db_engine(db_type="sqlite"):
-    """创建指定类型的数据库引擎"""
+# 创建数据库引擎
+def create_db_engine(db_type):
     try:
         if db_type == "mysql":
             config = DB_CONFIG["mysql"]
-            engine = create_engine(
-                f"mysql+pymysql://{config['user']}:{config['password']}@{config['host']}:{config['port']}/{config['database']}?charset={config['charset']}",
-                pool_size=5,
-                max_overflow=10,
-                pool_recycle=3600
-            )
-            logger.info(f"成功创建MySQL引擎连接：{config['host']}:{config['port']}/{config['database']}")
+            connection_str = f"mysql+pymysql://{config['user']}:{config['password']}@{config['host']}:{config['port']}/{config['database']}"
+            engine = create_engine(connection_str)
+            # 测试连接
+            with engine.connect():
+                pass
             return engine
         else:  # SQLite
-            config = DB_CONFIG["sqlite"]
-            engine = create_engine(
-                f"sqlite:///{config['path']}",
-                pool_size=5,
-                max_overflow=10,
-                pool_recycle=3600
-            )
-            logger.info(f"成功创建SQLite引擎连接：{config['path']}")
+            engine = create_engine(f"sqlite:///{DB_CONFIG['sqlite']['path']}")
+            # 优化SQLite性能
+            with engine.connect() as conn:
+                conn.execute(text('PRAGMA journal_mode=WAL;'))  # 预写日志
+                conn.execute(text('PRAGMA synchronous=NORMAL;'))  # 同步模式
+                conn.execute(text('PRAGMA temp_store=MEMORY;'))   # 临时存储
+                conn.execute(text('PRAGMA cache_size=-20000;'))   # 增加缓存（20MB）
             return engine
     except Exception as e:
         logger.error(f"创建数据库引擎失败: {str(e)}")
@@ -79,17 +75,6 @@ def create_db_engine(db_type="sqlite"):
 
 # 初始化数据库引擎
 db_engine = create_db_engine(DB_TYPE)
-
-# SQLite性能优化
-@event.listens_for(Engine, "connect")
-def set_sqlite_pragma(dbapi_connection, connection_record):
-    if DB_TYPE == "sqlite":
-        cursor = dbapi_connection.cursor()
-        cursor.execute('PRAGMA journal_mode=WAL;')  # 预写日志
-        cursor.execute('PRAGMA synchronous=NORMAL;')  # 同步模式
-        cursor.execute('PRAGMA temp_store=MEMORY;')   # 临时存储
-        cursor.execute('PRAGMA cache_size=-20000;')   # 增加缓存（20MB）
-        cursor.close()
 
 # ------------------------------
 # 核心函数：数据库查询+全链路日志（适配多数据库）
@@ -2003,9 +1988,17 @@ def manual_mode_page():
                 
             with cols[i % 3]:
                 default_val = 2.0 if var == "gammaf" else None
-                # 为初始密度设置默认值
+                # 为初始密度设置默认值（常见材料的典型值）
                 if var == "rh0f":
-                    default_val = 8.96  # 铜的默认密度
+                    # 根据材料名称自动填充典型密度值
+                    if flyer_material.lower() in ["铜", "copper"]:
+                        default_val = 8.96
+                    elif flyer_material.lower() in ["铝", "aluminum"]:
+                        default_val = 2.70
+                    elif flyer_material.lower() in ["铁", "iron"]:
+                        default_val = 7.87
+                    else:
+                        default_val = 8.0  # 默认值
                 
                 val = get_input_streamlit(
                     label=var,
@@ -2020,12 +2013,12 @@ def manual_mode_page():
                     desc="飞片初始密度（必须输入）" if var == "rh0f" else
                          "飞片压缩密度" if var == "rhf" else
                          "飞片冲击波速度" if var == "Df" else
-                         "飞片体声速" if var == "C0f" else
-                         "飞片Hugoniot参数S" if var == "Sf" else
+                         "飞片体声速（Hugoniot拟合）" if var == "C0f" else
+                         "飞片Hugoniot参数S（无量纲）" if var == "Sf" else
                          "飞片初始内能密度" if var == "E0f" else
                          "飞片压缩后内能密度" if var == "Ef" else
                          "飞片粒子速度" if var == "uf" else
-                         "飞片冲击速度" if var == "w" else
+                         "飞片初始冲击速度" if var == "w" else
                          "飞片冲击压力" if var == "Pf" else
                          "飞片格吕奈森系数" if var == "gammaf" else
                          "飞片冲击温度"
@@ -2043,9 +2036,17 @@ def manual_mode_page():
                 
             with cols[i % 3]:
                 default_val = 2.0 if var == "gammab" else None
-                # 为初始密度设置默认值
+                
+                # 为初始密度设置默认值（常见材料的典型值）
                 if var == "rh0b":
-                    default_val = 2.7  # 铝的默认密度
+                    if base_material.lower() in ["铜", "copper"]:
+                        default_val = 8.96
+                    elif base_material.lower() in ["铝", "aluminum"]:
+                        default_val = 2.70
+                    elif base_material.lower() in ["铁", "iron"]:
+                        default_val = 7.87
+                    else:
+                        default_val = 8.0  # 默认值
                 
                 val = get_input_streamlit(
                     label=var,
@@ -2082,9 +2083,17 @@ def manual_mode_page():
                 
             with cols[i % 3]:
                 default_val = 2.0 if var == "gammas" else None
-                # 为初始密度设置默认值
+                
+                # 为初始密度设置默认值（常见材料的典型值）
                 if var == "rh0s":
-                    default_val = 8.96  # 铜的默认密度
+                    if sample_material.lower() in ["铜", "copper"]:
+                        default_val = 8.96
+                    elif sample_material.lower() in ["铝", "aluminum"]:
+                        default_val = 2.70
+                    elif sample_material.lower() in ["铁", "iron"]:
+                        default_val = 7.87
+                    else:
+                        default_val = 8.0  # 默认值
                 
                 val = get_input_streamlit(
                     label=var,
@@ -2111,11 +2120,26 @@ def manual_mode_page():
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
     
-    # 固定显示保存当前参数按钮
+    # 保存参数按钮
     col_save, col_other = st.columns([1, 3])
     with col_save:
         if st.button("保存当前参数到数据库"):
-            count = save_input_parameters(input_params, sample_material, exp_method)
+            # 准备要保存的数据
+            input_data = {
+                'rho0': input_params.get('rh0f'),
+                'Us': input_params.get('Df'),
+                'Up': input_params.get('uf'),
+                'P': input_params.get('Pf'),
+                'gamma': input_params.get('gammaf'),
+                'T': input_params.get('Tf')
+            }
+            
+            # 处理可能的列表值（取第一个值）
+            for k, v in input_data.items():
+                if isinstance(v, list) and len(v) > 0:
+                    input_data[k] = v[0]
+            
+            count = save_input_data_to_db(input_data, sample_material, exp_method)
             if count > 0:
                 st.success(f"已保存到 {sample_material} 数据集，共 {count} 条记录")
     
@@ -2373,19 +2397,17 @@ def manual_mode_page():
 
 # 主程序
 def main():
-    st.set_page_config(
-        page_title="冲击波参数计算与分析系统",
-        page_icon="⚡",
-        layout="wide"
-    )
-    
     # 初始化会话状态
-    if "page" not in st.session_state:
+    if 'page' not in st.session_state:
         st.session_state.page = "home"
-    if "previous_page" not in st.session_state:
-        st.session_state.previous_page = None
+    if 'confirm_delete' not in st.session_state:
+        st.session_state['confirm_delete'] = False
+    if 'confirm_clear' not in st.session_state:
+        st.session_state['confirm_clear'] = False
+    if 'previous_page' not in st.session_state:
+        st.session_state.previous_page = "home"
     
-    # 显示当前页面
+    # 页面导航
     if st.session_state.page == "home":
         home_page()
     elif st.session_state.page == "database_mode":
@@ -2395,7 +2417,7 @@ def main():
     elif st.session_state.page == "view_database":
         view_database()
         if st.button("返回上一页"):
-            st.session_state.page = st.session_state.previous_page or "home"
+            st.session_state.page = st.session_state.previous_page
             st.rerun()
 
 if __name__ == "__main__":
