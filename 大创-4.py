@@ -2007,7 +2007,7 @@ def manual_mode_page():
                 if var == "rh0f":
                     default_val = 8.96  # 铜的默认密度
                 
-                                val = get_input_streamlit(
+                val = get_input_streamlit(
                     label=var,
                     var_name=var,
                     key=f"f_{var}",
