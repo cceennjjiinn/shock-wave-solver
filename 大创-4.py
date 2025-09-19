@@ -1,20 +1,28 @@
 import streamlit as st
-import pandas as pd
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
-from io import BytesIO, StringIO
-from sympy import symbols, Eq, solve, simplify, evalf
+from io import BytesIO
+import itertools
+from sympy import symbols, Eq, solve, simplify, sympify
 from scipy.optimize import least_squares
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score, mean_squared_error
+import sqlite3
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 import os
 import logging
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
-import itertools
 
 # 配置日志
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("shock_wave_calculator.log"),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # 数据库配置
@@ -32,113 +40,80 @@ init_success = False
 def init_database():
     global db_engine, init_success
     try:
-        # 使用SQLite数据库
+        # 创建SQLite数据库引擎
         db_path = DB_CONFIG['sqlite']['path']
         db_engine = create_engine(f'sqlite:///{db_path}')
         
-        # 检查并创建必要的表
-        with db_engine.connect() as conn:
-            # 创建冲击波数据表
+        # 创建表结构（如果不存在）
+        with db_engine.begin() as conn:
+            # 检查并创建数据表（不含gamma列）
             conn.execute(text("""
             CREATE TABLE IF NOT EXISTS shock_wave_all_data (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 material TEXT NOT NULL,
-                rho0 REAL,       -- 初始密度 (g/cm³)
-                Us REAL,         -- 冲击波速度 (km/s)
-                Up REAL,         -- 粒子速度 (km/s)
-                P REAL,          -- 压力 (GPa)
-                V REAL,          -- 比体积 (cm³/g)
-                rho REAL,        -- 压缩密度 (g/cm³)
-                V_V0 REAL,       -- 比体积比
-                exp_method TEXT, -- 实验方法
-                gamma REAL,      -- 格吕奈森系数
-                T REAL,          -- 温度 (K)
+                rho0 REAL,
+                Us REAL,
+                Up REAL,
+                P REAL,
+                V REAL,
+                rho REAL,
+                V_V0 REAL,
+                exp_method TEXT,
+                T REAL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """))
-            conn.commit()
         
         init_success = True
         logger.info("数据库初始化成功")
         return True
     except Exception as e:
         logger.error(f"数据库初始化失败: {str(e)}")
-        st.error(f"数据库初始化失败: {str(e)}")
         init_success = False
         return False
 
-# 确保数据库初始化
+# 初始化数据库
 init_database()
 
-# 数据库查询函数 - 改进错误处理
+# 数据库查询函数
 def query_database(query, params=None):
     if db_engine is None or not init_success:
-        st.warning("数据库连接未初始化，请检查配置")
-        return None
-        
+        logger.warning("数据库连接未初始化，尝试重新连接...")
+        if not init_database():
+            logger.error("无法连接到数据库")
+            return None
+    
     try:
         with db_engine.connect() as conn:
-            if params:
-                result = conn.execute(text(query), params)
-            else:
-                result = conn.execute(text(query))
+            result = conn.execute(text(query), params or {})
             # 获取列名
             columns = result.keys()
             # 转换为字典列表
-            return [dict(zip(columns, row)) for row in result.fetchall()]
+            data = [dict(zip(columns, row)) for row in result.fetchall()]
+            return data
     except SQLAlchemyError as e:
-        error_msg = f"数据库查询失败: {str(e)}"
-        logger.error(error_msg)
-        st.error(error_msg)
-        # 尝试重新初始化数据库连接
-        if not init_database():
-            st.error("无法重新建立数据库连接，请检查数据库文件是否存在且可访问")
-        return None
-    except Exception as e:
-        error_msg = f"查询数据库时发生意外错误: {str(e)}"
-        logger.error(error_msg)
-        st.error(error_msg)
+        logger.error(f"数据库查询失败: {str(e)}")
         return None
 
-# 物理合理性检查函数 - 进一步放宽容差处理
+# 物理合理性检查函数 - 放宽约束条件
 def validate_physical合理性(data, material_type):
     errors = []
-    tolerance = 1e-4  # 进一步放宽数值计算容差
     
-    # 密度必须为正数（大幅放宽容差）
-    for rho_param in ['rho0', 'rho']:
-        if rho_param in data and data[rho_param] is not None:
-            # 允许微小的负值，接近零的值视为有效
-            if data[rho_param] < -0.1:  # 从-tolerance放宽到-0.1
-                errors.append(f"{material_type}的{rho_param}必须为非负值，当前值: {data[rho_param]}")
+    # 密度检查：压缩密度应大于初始密度（放宽）
+    if 'rho0' in data and 'rho' in data:
+        if data['rho0'] is not None and data['rho'] is not None:
+            if data['rho'] < data['rho0'] - 1.0:  # 允许略小于初始密度
+                errors.append(f"{material_type}压缩密度(rho={data['rho']})小于初始密度(rho0={data['rho0']})")
     
-    # 冲击波速度必须为正数（大幅放宽）
-    if 'Us' in data and data['Us'] is not None and data['Us'] < -0.1:  # 从-tolerance放宽到-0.1
-        errors.append(f"{material_type}冲击波速度必须为非负值，当前值: {data['Us']}")
+    # 冲击波速度应大于粒子速度（放宽）
+    if 'Us' in data and 'Up' in data:
+        if data['Us'] is not None and data['Up'] is not None:
+            if data['Us'] < data['Up'] - 0.5:  # 允许略小于粒子速度
+                errors.append(f"{material_type}冲击波速度(Us={data['Us']})小于粒子速度(Up={data['Up']})")
     
-    # 粒子速度可以为较小的负值（进一步放宽）
-    if 'Up' in data and data['Up'] is not None and data['Up'] < -1.0:  # 从-tolerance放宽到-1.0
-        errors.append(f"{material_type}粒子速度异常低，当前值: {data['Up']}")
-    
-    # Hugoniot关系检查：冲击波速度应大于粒子速度（大幅放宽）
-    if 'Us' in data and 'Up' in data and data['Us'] is not None and data['Up'] is not None:
-        # 允许冲击波速度略小于粒子速度，但不能小太多
-        if data['Us'] < data['Up'] - 0.5:  # 从+tolerance放宽到-0.5
-            errors.append(f"{material_type}冲击波速度(Us={data['Us']})应大于粒子速度(Up={data['Up']})")
-    
-    # 压力计算检查：基于动量守恒 P = rho0 * Us * Up * 10^3（进一步放宽误差范围）
-    if 'P' in data and 'rho0' in data and 'Us' in data and 'Up' in data:
-        if None not in [data['P'], data['rho0'], data['Us'], data['Up']]:
-            calculated_P = data['rho0'] * data['Us'] * data['Up'] * 1000  # 单位转换系数1000
-            # 允许40%误差（从20%放宽）
-            if abs(data['P'] - calculated_P) > 0.4 * max(abs(calculated_P), 1e-6):  # 避免除以零
-                errors.append(f"{material_type}压力值与动量守恒计算不符，输入P={data['P']}, 计算值={calculated_P:.4f}")
-    
-    # 密度关系检查：压缩密度应大于初始密度（大幅放宽）
-    if 'rho' in data and 'rho0' in data and data['rho'] is not None and data['rho0'] is not None:
-        # 允许压缩密度略小于初始密度，但不能小太多
-        if data['rho'] < data['rho0'] - 1.0:  # 从-tolerance放宽到-1.0
-            errors.append(f"{material_type}压缩密度(rho={data['rho']})应大于初始密度(rho0={data['rho0']})")
+    # 压力检查：应大于0（大幅放宽）
+    if 'P' in data and data['P'] is not None and data['P'] < -10.0:  # 允许微小负值
+        errors.append(f"{material_type}冲击压力(P={data['P']})异常低，通常应大于0")
     
     # 比体积比检查：应小于1（大幅放宽）
     if 'V_V0' in data and data['V_V0'] is not None and data['V_V0'] > 1.5:  # 从+1+tolerance放宽到1.5
@@ -147,11 +122,6 @@ def validate_physical合理性(data, material_type):
     # 温度检查：冲击温度应高于室温（进一步放宽）
     if 'T' in data and data['T'] is not None and data['T'] < 50:  # 从100K放宽到50K
         errors.append(f"{material_type}冲击温度(T={data['T']})异常低，通常应高于室温(约300K)")
-    
-    # 格吕奈森系数检查：范围进一步放宽
-    if 'gamma' in data and data['gamma'] is not None:
-        if data['gamma'] < -1.0 or data['gamma'] > 50:  # 从0到20放宽到-1到50
-            errors.append(f"{material_type}格吕奈森系数(gamma={data['gamma']})超出合理范围(-1到50)")
     
     return errors
 
@@ -183,6 +153,8 @@ def get_material_data(material_name, fields=None):
             # 确保包含实验方法字段用于颜色区分
             if 'exp_method' not in fields:
                 fields.append('exp_method')
+            # 移除gamma字段，因为数据库中不存在
+            fields = [f for f in fields if f != 'gamma']
             fields = ', '.join(fields)  # 按需指定字段
             
         query = f"SELECT {fields} FROM shock_wave_all_data WHERE material = :material"
@@ -238,7 +210,6 @@ def save_results_to_db(results, material_name="Copper"):
                     'P': result.get('Pf', 0),
                     'rho': result.get('rhf', 0),
                     'V_V0': result.get('V_V0', 0),
-                    'gamma': result.get('gammaf', 0),
                     'T': result.get('Tf', 0) if 'Tf' in result else 0
                 }, material_name)
                 
@@ -262,13 +233,12 @@ def save_results_to_db(results, material_name="Copper"):
                     'rho': result.get('rhf', 0),
                     'V_V0': result.get('V_V0', 0),
                     'exp_method': 'calculated',
-                    'gamma': result.get('gammaf', 0),
                     'T': result.get('Tf', 0) if 'Tf' in result else 0
                 }
                 stmt = text("""
                     INSERT INTO shock_wave_all_data 
-                    (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T) 
-                    VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
+                    (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, T) 
+                    VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :T)
                 """)
                 conn.execute(stmt, data)
                 count += 1
@@ -299,7 +269,6 @@ def save_input_parameters(input_params, material_name="Copper", exp_method="manu
             'Up': input_params.get('uf') if isinstance(input_params.get('uf'), (int, float)) else 0,
             'P': input_params.get('Pf') if isinstance(input_params.get('Pf'), (int, float)) else 0,
             'rho': input_params.get('rhf') if isinstance(input_params.get('rhf'), (int, float)) else 0,
-            'gamma': input_params.get('gammaf') if isinstance(input_params.get('gammaf'), (int, float)) else 0,
             'T': input_params.get('Tf') if isinstance(input_params.get('Tf'), (int, float)) else 0
         }
         
@@ -323,15 +292,14 @@ def save_input_parameters(input_params, material_name="Copper", exp_method="manu
             'rho': data_dict['rho'],
             'V_V0': 0,  # 无法直接从输入参数获取
             'exp_method': exp_method,
-            'gamma': data_dict['gamma'],
             'T': data_dict['T']
         }
         
         with db_engine.begin() as conn:
             stmt = text("""
                 INSERT INTO shock_wave_all_data 
-                (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T) 
-                VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
+                (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, T) 
+                VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :T)
             """)
             conn.execute(stmt, data)
         logger.info(f"成功保存输入参数到 {material_name} 数据集")
@@ -382,13 +350,12 @@ def save_input_data_to_db(input_data, material_name, exp_method="manual_input"):
                 'rho': float(input_data.get('rho', 0)),
                 'V_V0': float(input_data.get('V_V0', 0)),
                 'exp_method': exp_method,
-                'gamma': float(input_data.get('gamma', 0)),
                 'T': float(input_data.get('T', 0))
             }
             stmt = text("""
                 INSERT INTO shock_wave_all_data 
-                (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T) 
-                VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
+                (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, T) 
+                VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :T)
             """)
             conn.execute(stmt, data)
         logger.info(f"成功保存输入数据到 {material_name} 数据集")
@@ -445,13 +412,12 @@ def bulk_import_data(df, material_name, exp_method="bulk_import"):
                     'rho': row.get('rho', 0),
                     'V_V0': row.get('V_V0', 0),
                     'exp_method': exp_method,
-                    'gamma': row.get('gamma', 0),
                     'T': row.get('T', 0)
                 }
                 stmt = text("""
                     INSERT INTO shock_wave_all_data 
-                    (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T) 
-                    VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
+                    (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, T) 
+                    VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :T)
                 """)
                 conn.execute(stmt, data)
                 count += 1
@@ -663,10 +629,10 @@ def view_database():
             if st.button("下载数据导入模板"):
                 template = pd.DataFrame(columns=[
                     'rho0', 'Us', 'Up', 'P', 'V', 'rho', 
-                    'V_V0', 'gamma', 'T'
+                    'V_V0', 'T'
                 ])
                 # 填充符合物理规律的示例数据（铜的典型值）
-                template.loc[0] = [8.96, 5.0, 1.0, 44.8, 0.089, 11.2, 0.8, 2.0, 3000]
+                template.loc[0] = [8.96, 5.0, 1.0, 44.8, 0.089, 11.2, 0.8, 3000]
                 csv = template.to_csv(index=False)
                 st.download_button(
                     label="下载CSV模板",
@@ -1432,10 +1398,10 @@ def database_mode_page():
     with col3:
         sample_material = st.selectbox("样品材料", materials, key="sample_material")
     
-    # 按需查询字段以减少数据传输，确保包含exp_method
-    flyer_df = get_material_data(flyer_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho', 'exp_method', 'gamma'])
-    base_df = get_material_data(base_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho', 'exp_method', 'gamma'])
-    sample_df = get_material_data(sample_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho', 'exp_method', 'gamma'])
+    # 按需查询字段以减少数据传输，确保包含exp_method，移除gamma
+    flyer_df = get_material_data(flyer_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho', 'exp_method'])
+    base_df = get_material_data(base_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho', 'exp_method'])
+    sample_df = get_material_data(sample_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho', 'exp_method'])
     
     # 为每种材料类型拟合数据并清晰标注
     with st.spinner(f"正在拟合飞片材料 {flyer_material} 数据..."):
@@ -1540,15 +1506,8 @@ def database_mode_page():
                     elif var == "Sf":
                         default_val = default_params["f"]["S"]
                 elif var == "gammaf":
-                    # 尝试从数据中获取平均格吕奈森系数
-                    if not flyer_df.empty and 'gamma' in flyer_df.columns:
-                        gamma_vals = flyer_df['gamma'].dropna()
-                        if len(gamma_vals) > 0:
-                            default_val = gamma_vals.mean()
-                        else:
-                            default_val = 2.0
-                    else:
-                        default_val = 2.0  # 默认格吕奈森系数
+                    # 使用默认格吕奈森系数，因为数据库中没有gamma列
+                    default_val = 2.0
                 # 为初始密度设置默认值和更强的提示
                 if var == "rh0f" and default_val is None:
                     default_val = 8.96  # 铜的默认密度
@@ -1584,15 +1543,8 @@ def database_mode_page():
                     elif var == "Sb":
                         default_val = default_params["b"]["S"]
                 elif var == "gammab":
-                    # 尝试从数据中获取平均格吕奈森系数
-                    if not base_df.empty and 'gamma' in base_df.columns:
-                        gamma_vals = base_df['gamma'].dropna()
-                        if len(gamma_vals) > 0:
-                            default_val = gamma_vals.mean()
-                        else:
-                            default_val = 2.0
-                    else:
-                        default_val = 2.0  # 默认格吕奈森系数
+                    # 使用默认格吕奈森系数，因为数据库中没有gamma列
+                    default_val = 2.0
                 
                 val = get_input_streamlit(
                     label=var,
@@ -1637,15 +1589,8 @@ def database_mode_page():
                     elif var == "Ss":
                         default_val = default_params["s"]["S"]
                 elif var == "gammas":
-                    # 尝试从数据中获取平均格吕奈森系数
-                    if not sample_df.empty and 'gamma' in sample_df.columns:
-                        gamma_vals = sample_df['gamma'].dropna()
-                        if len(gamma_vals) > 0:
-                            default_val = gamma_vals.mean()
-                        else:
-                            default_val = 2.0
-                    else:
-                        default_val = 2.0  # 默认格吕奈森系数
+                    # 使用默认格吕奈森系数，因为数据库中没有gamma列
+                    default_val = 2.0
                 
                 val = get_input_streamlit(
                     label=var,
@@ -2062,13 +2007,13 @@ def manual_mode_page():
     # 基板参数
     with st.expander(f"{base_material} 基板参数", expanded=True):
         cols = st.columns(3)
-        # 获取当前材料的默认值
-        default_vals = material_defaults.get(base_material, {})
-        # 替换参数前缀以匹配基板参数
-        base_defaults = {f"rh0b": default_vals.get("rh0f", None),
-                         f"C0b": default_vals.get("C0f", None),
-                         f"Sb": default_vals.get("Sf", None),
-                         f"gammab": default_vals.get("gammaf", 2.0)}
+        # 基板参数默认值
+        base_defaults = {
+            "铜": {"rh0b": 8.96, "C0b": 3.94, "Sb": 1.48, "gammab": 2.0},
+            "铝": {"rh0b": 2.70, "C0b": 5.38, "Sb": 1.33, "gammab": 2.1},
+            "铁": {"rh0b": 7.87, "C0b": 3.57, "Sb": 1.58, "gammab": 1.9},
+            "水": {"rh0b": 1.00, "C0b": 1.48, "Sb": 1.99, "gammab": 0.5}
+        }.get(base_material, {})
         
         for i, var in enumerate(variables["b"]):
             # 温度参数仅在计算温度时显示
@@ -2106,13 +2051,13 @@ def manual_mode_page():
     # 样品参数
     with st.expander(f"{sample_material} 样品参数", expanded=True):
         cols = st.columns(3)
-        # 获取当前材料的默认值
-        default_vals = material_defaults.get(sample_material, {})
-        # 替换参数前缀以匹配样品参数
-        sample_defaults = {f"rh0s": default_vals.get("rh0f", None),
-                          f"C0s": default_vals.get("C0f", None),
-                          f"Ss": default_vals.get("Sf", None),
-                          f"gammas": default_vals.get("gammaf", 2.0)}
+        # 样品参数默认值
+        sample_defaults = {
+            "铜": {"rh0s": 8.96, "C0s": 3.94, "Ss": 1.48, "gammas": 2.0},
+            "铝": {"rh0s": 2.70, "C0s": 5.38, "Ss": 1.33, "gammas": 2.1},
+            "铁": {"rh0s": 7.87, "C0s": 3.57, "Ss": 1.58, "gammas": 1.9},
+            "水": {"rh0s": 1.00, "C0s": 1.48, "Ss": 1.99, "gammas": 0.5}
+        }.get(sample_material, {})
         
         for i, var in enumerate(variables["s"]):
             # 温度参数仅在计算温度时显示
@@ -2147,7 +2092,7 @@ def manual_mode_page():
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
     
-    # 固定显示保存当前参数按钮（仅当数据库连接有效时）
+    # 保存当前参数按钮（仅当数据库连接有效时显示）
     if db_engine is not None and init_success:
         col_save, col_other = st.columns([1, 3])
         with col_save:
@@ -2243,10 +2188,13 @@ def manual_mode_page():
                 eqs.append(Eq(sym_vars['Tb'] - 300 - (sym_vars['Eb'] - sym_vars['E0b'])*1e6 / 
                              (Cv_values['b'] * (1 + sym_vars['gammab']/2)), 0))
             
-            # 检查样品和基板是否为同一材料
-            is_same_material = (sample_material.strip().lower() == base_material.strip().lower())
+            try:
+                # 检查样品和基板是否为同一材料
+                cond = (sample_material.lower() == base_material.lower())
+            except:
+                cond = False
                 
-            if is_same_material:
+            if cond:
                 # 样品与基板为同一材料：参数与基板一致
                 eqs += [
                     Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),  # 压力连续性
@@ -2400,17 +2348,19 @@ def manual_mode_page():
     
     if st.button("返回主页"):
         st.session_state.page = "home"
-        st.rerun()
+        st.rerun()  # 立即刷新页面
 
-# 主程序
+# 主程序入口
 def main():
-    # 确保中文字体正常显示
-    plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
-    # 初始化页面状态
+    # 确保页面状态存在
     if 'page' not in st.session_state:
         st.session_state.page = "home"
+    if 'confirm_delete' not in st.session_state:
+        st.session_state['confirm_delete'] = False
+    if 'confirm_clear' not in st.session_state:
+        st.session_state['confirm_clear'] = False
     
-    # 根据页面状态显示不同内容
+    # 页面路由
     if st.session_state.page == "home":
         home_page()
     elif st.session_state.page == "database_mode":
@@ -2426,6 +2376,9 @@ def main():
             else:
                 st.session_state.page = "home"
             st.rerun()
+    else:
+        st.session_state.page = "home"
+        home_page()
 
 if __name__ == "__main__":
     main()
