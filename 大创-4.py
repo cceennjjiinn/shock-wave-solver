@@ -2,13 +2,14 @@ import math
 import numpy as np
 import pandas as pd
 import streamlit as st
-from sympy import symbols, Eq, simplify, solve, sympify
+from sympy import symbols, Eq, simplify, solve, sympify,Symbol
 from scipy.optimize import least_squares
 from io import BytesIO
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error
 import logging
+import itertools
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
