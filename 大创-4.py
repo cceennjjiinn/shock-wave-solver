@@ -3,38 +3,93 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from io import BytesIO, StringIO
+import os
+import logging
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
 from sympy import symbols, Eq, solve, simplify, Symbol
 from scipy.optimize import least_squares
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error
 import itertools
-import logging
-from sqlalchemy import create_engine, text
-import os
 
 # 配置日志
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("shock_wave_calculator.log"),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
-# 数据库配置 - 只保留SQLite配置
-DB_TYPE = "sqlite"
+# 数据库配置 - 只使用SQLite
 DB_CONFIG = {
-    "sqlite": {
-        "path": "shock_wave_data.db"
+    'sqlite': {
+        'path': 'shock_wave_data.db'
     }
 }
 
-# 创建数据库引擎
-def create_db_engine(db_type):
-    if db_type == "sqlite":
-        return create_engine(f"sqlite:///{DB_CONFIG['sqlite']['path']}")
-    raise ValueError(f"不支持的数据库类型: {db_type}")
-
 # 初始化数据库引擎
-db_engine = create_db_engine(DB_TYPE)
+try:
+    db_path = DB_CONFIG['sqlite']['path']
+    db_engine = create_engine(f'sqlite:///{db_path}')
+    logger.info(f"成功连接到SQLite数据库: {db_path}")
+except Exception as e:
+    logger.error(f"数据库连接失败: {str(e)}")
+    st.error(f"数据库连接失败: {str(e)}")
+    db_engine = None
+
+# 初始化数据库表结构 - 修复索引创建语法
+def init_database():
+    if db_engine is None:
+        return False
+        
+    try:
+        with db_engine.begin() as conn:
+            # 创建数据表（不含索引定义）
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS shock_wave_all_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                material TEXT,       -- 材料名称
+                rho0 REAL,           -- 初始密度 (g/cm³)
+                Us REAL,             -- 冲击波速度 (km/s)
+                Up REAL,             -- 粒子速度 (km/s)
+                P REAL,              -- 冲击压力 (GPa)
+                V REAL,              -- 比体积 (cm³/g)
+                rho REAL,            -- 压缩密度 (g/cm³)
+                V_V0 REAL,           -- 比体积比 (V/V0)
+                exp_method TEXT,     -- 实验方法/数据来源
+                gamma REAL,          -- 格吕奈森系数
+                T REAL               -- 冲击温度 (K)
+            )
+            """))
+            
+            # 单独创建索引，避免语法错误
+            conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_material ON shock_wave_all_data (material)
+            """))
+            
+            logger.info("数据库表结构初始化成功，包含材料索引")
+            return True
+    except SQLAlchemyError as e:
+        logger.error(f"数据库初始化失败: {str(e)}")
+        st.error(f"数据库初始化失败: {str(e)}")
+        return False
+    except Exception as e:
+        logger.error(f"初始化数据库时发生意外错误: {str(e)}")
+        st.error(f"初始化数据库时发生意外错误: {str(e)}")
+        return False
+
+# 初始化数据库
+init_success = init_database()
 
 # 数据库查询函数
 def query_database(query, params=None):
+    if db_engine is None or not init_success:
+        return None
+        
     try:
         with db_engine.connect() as conn:
             if params:
@@ -45,85 +100,27 @@ def query_database(query, params=None):
             columns = result.keys()
             # 转换为字典列表
             return [dict(zip(columns, row)) for row in result.fetchall()]
-    except Exception as e:
+    except SQLAlchemyError as e:
         logger.error(f"数据库查询失败: {str(e)}")
         st.error(f"数据库查询失败: {str(e)}")
-        return []
-
-# 初始化数据库表结构
-def init_database():
-    try:
-        with db_engine.connect() as conn:
-            # 创建数据表，增加更多物理参数字段
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS shock_wave_all_data (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    material TEXT,        -- 材料名称
-                    rho0 REAL,            -- 初始密度 (g/cm³)
-                    Us REAL,              -- 冲击波速度 (km/s)
-                    Up REAL,              -- 粒子速度 (km/s)
-                    P REAL,               -- 冲击压力 (GPa)
-                    V REAL,               -- 比体积 (cm³/g)
-                    rho REAL,             -- 压缩密度 (g/cm³)
-                    V_V0 REAL,            -- 比体积比 (V/V0)
-                    exp_method TEXT,      -- 实验方法/数据来源
-                    gamma REAL,           -- 格吕奈森系数
-                    T REAL,               -- 冲击温度 (K)
-                    INDEX idx_material (material)  -- 新增索引以加快查询
-                )
-            """))
-            conn.commit()
-            logger.info("数据库表结构初始化完成")
+        return None
     except Exception as e:
-        logger.error(f"数据库初始化失败: {str(e)}")
-        st.error(f"数据库初始化失败: {str(e)}")
+        logger.error(f"查询数据库时发生意外错误: {str(e)}")
+        st.error(f"查询数据库时发生意外错误: {str(e)}")
+        return None
 
-# 修复数据库表结构 - 确保所有必要字段存在
-def fix_database_schema():
-    """修复数据库表结构，添加缺失的字段"""
-    try:
-        with db_engine.connect() as conn:
-            # 检查是否存在所需字段（SQLite方式）
-            cursor = conn.connection.cursor()
-            cursor.execute("PRAGMA table_info(shock_wave_all_data)")
-            
-            columns = [row[1] for row in cursor.fetchall()]  # SQLite返回的列信息中索引1是列名
-            
-            # 需要确保存在的字段
-            required_columns = [
-                ('gamma', 'REAL'),
-                ('T', 'REAL'),
-                ('V', 'REAL'),
-                ('V_V0', 'REAL')
-            ]
-            
-            for col_name, col_type in required_columns:
-                if col_name not in columns:
-                    # SQLite的ALTER TABLE语法
-                    conn.execute(text(f"ALTER TABLE shock_wave_all_data ADD COLUMN {col_name} {col_type}"))
-                    conn.commit()
-                    logger.info(f"数据库表结构已修复，添加了{col_name}字段")
-                    st.success(f"数据库表结构已修复，添加了{col_name}字段")
-    except Exception as e:
-        logger.error(f"修复数据库表结构失败: {str(e)}")
-        st.error(f"修复数据库表结构失败: {str(e)}")
-
-# 先初始化数据库，再修复可能的表结构问题
-init_database()
-fix_database_schema()
-
-# 物理合理性检查函数
-def validate_physical合理性(data, material_type="通用"):
-    """检查数据是否符合冲击波物理规律，返回错误信息列表"""
+# 物理合理性检查函数 - 增加容差处理
+def validate_physical合理性(data, material_type):
     errors = []
-    # 增加容差，使检查更宽松
-    tolerance = 1e-3
+    tolerance = 1e-6  # 数值计算容差
     
-    # 基本物理约束检查
-    if 'rho0' in data and data['rho0'] is not None and (data['rho0'] <= tolerance or data['rho0'] > 20):
-        errors.append(f"{material_type}初始密度必须为正数且通常小于20 g/cm³，当前值: {data['rho0']}")
+    # 密度必须为正数（增加容差）
+    for rho_param in ['rho0', 'rho']:
+        if rho_param in data and data[rho_param] is not None and data[rho_param] <= -tolerance:
+            errors.append(f"{material_type}的{rho_param}必须为正数，当前值: {data[rho_param]}")
     
-    if 'Us' in data and data['Us'] is not None and data['Us'] <= tolerance:
+    # 冲击波速度必须为正数（增加容差）
+    if 'Us' in data and data['Us'] is not None and data['Us'] <= -tolerance:
         errors.append(f"{material_type}冲击波速度必须为正数，当前值: {data['Us']}")
     
     if 'Up' in data and data['Up'] is not None and data['Up'] < -tolerance:
@@ -1959,12 +1956,13 @@ def manual_mode_page():
                     default_val = 0.0
                 
                 val = get_input_streamlit(
-                    label=var,
-                    var_name=var,
+                    label=var,var_name=var,
                     key=f"f_{var}",
                     default=default_val,
                     unit=var_units[var],
-                    desc=var_descs[var]
+                    desc=var_descs[var],
+                    # 初始密度不允许留空，强制要求输入
+                    disabled=False
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
@@ -1973,12 +1971,7 @@ def manual_mode_page():
     with st.expander(f"{base_material} 基板参数", expanded=True):
         cols = st.columns(3)
         # 预设常用材料的默认值
-        default_vals = material_defaults.get(base_material, {})
-        # 替换参数前缀以匹配基板参数
-        base_defaults = {f"rh0b": default_vals.get("rh0f", None),
-                         f"C0b": default_vals.get("C0f", None),
-                         f"Sb": default_vals.get("Sf", None),
-                         f"gammab": default_vals.get("gammaf", None)}
+        base_defaults = material_defaults.get(base_material, {})
         
         for i, var in enumerate(variables["b"]):
             # 温度参数仅在计算温度时显示
@@ -2020,12 +2013,7 @@ def manual_mode_page():
     with st.expander(f"{sample_material} 样品参数", expanded=True):
         cols = st.columns(3)
         # 预设常用材料的默认值
-        default_vals = material_defaults.get(sample_material, {})
-        # 替换参数前缀以匹配样品参数
-        sample_defaults = {f"rh0s": default_vals.get("rh0f", None),
-                          f"C0s": default_vals.get("C0f", None),
-                          f"Ss": default_vals.get("Sf", None),
-                          f"gammas": default_vals.get("gammaf", None)}
+        sample_defaults = material_defaults.get(sample_material, {})
         
         for i, var in enumerate(variables["s"]):
             # 温度参数仅在计算温度时显示
@@ -2292,7 +2280,7 @@ def manual_mode_page():
             st.download_button(
                 label="下载结果数据",
                 data=csv,
-                file_name="manual_mode_results.csv",
+                file_name="solver_results.csv",
                 mime="text/csv",
             )
             
@@ -2306,7 +2294,7 @@ def manual_mode_page():
                 st.download_button(
                     label="下载图表",
                     data=buf2,
-                    file_name="manual_analysis_with_temp.png" if calculate_temp else "manual_analysis_results.png",
+                    file_name="analysis_with_temp_error.png" if calculate_temp else "analysis_results.png",
                     mime="image/png"
                 )
             
@@ -2323,20 +2311,24 @@ def manual_mode_page():
         st.session_state.page = "home"
         st.rerun()  # 立即刷新页面
 
-# 主函数
+# 主程序
 def main():
-    # 确保中文显示正常
-    plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
-    
-    # 初始化页面状态
-    if "page" not in st.session_state:
+    # 确保页面状态已初始化
+    if 'page' not in st.session_state:
         st.session_state.page = "home"
-    if "confirm_delete" not in st.session_state:
-        st.session_state.confirm_delete = False
-    if "confirm_clear" not in st.session_state:
-        st.session_state.confirm_clear = False
-    if "previous_page" not in st.session_state:
-        st.session_state.previous_page = None
+    if 'confirm_delete' not in st.session_state:
+        st.session_state['confirm_delete'] = False
+    if 'confirm_clear' not in st.session_state:
+        st.session_state['confirm_clear'] = False
+    if 'previous_page' not in st.session_state:
+        st.session_state.previous_page = "home"
+    
+    # 设置页面配置
+    st.set_page_config(
+        page_title="冲击波参数计算与分析系统",
+        page_icon="⚡",
+        layout="wide"
+    )
     
     # 页面导航
     if st.session_state.page == "home":
@@ -2347,12 +2339,9 @@ def main():
         manual_mode_page()
     elif st.session_state.page == "view_database":
         view_database()
-        # 返回按钮
+        # 添加返回按钮
         if st.button("返回上一页"):
-            if st.session_state.previous_page:
-                st.session_state.page = st.session_state.previous_page
-            else:
-                st.session_state.page = "home"
+            st.session_state.page = st.session_state.previous_page
             st.rerun()
 
 if __name__ == "__main__":
