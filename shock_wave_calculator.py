@@ -1075,6 +1075,10 @@ def solve_numerically(eqs, sym_vars, initial_guess):
         elif var_str.startswith('T'):  # 温度
             lower_bounds[i] = 300.0  # 不低于室温
             upper_bounds[i] = 1e5  # K
+        # 新增：对不匹配任何物理变量前缀的变量（如测试用的x、y）放宽边界
+        else:
+            lower_bounds[i] = -1e6  # 允许负值
+            upper_bounds[i] = 1e6   # 更大的范围
     
     # 执行最小二乘优化
     result = least_squares(
