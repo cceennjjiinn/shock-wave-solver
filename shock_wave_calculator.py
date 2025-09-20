@@ -170,7 +170,8 @@ def init_database():
                         V_V0 REAL,       -- 比体积比 (V/V0)
                         exp_method TEXT, -- 实验方法/数据来源
                         gamma REAL,      -- 格吕奈森系数
-                        T REAL           -- 冲击温度 (K)
+                        T REAL,          -- 冲击温度 (K)
+                        INDEX idx_material (material)  -- 新增索引以加快查询
                     )
                 """))
                 conn.commit()
@@ -215,54 +216,50 @@ def fix_database_schema():
 init_database()
 fix_database_schema()
 
-# ------------------------------
-# 核心优化1：物理合理性检查（参考新代码的容忍度逻辑）
-# ------------------------------
+# 物理合理性检查函数
 def validate_physical合理性(data, material_type="通用"):
-    """检查数据是否符合冲击波物理规律，返回错误信息列表（增加数值容忍度）"""
+    """检查数据是否符合冲击波物理规律，返回错误信息列表"""
     errors = []
-    tolerance = 1e-3  # 数值计算容忍度
     
-    # 基本物理约束检查（放宽浮点数误差容忍）
-    if 'rho0' in data and data['rho0'] is not None:
-        if data['rho0'] <= tolerance or data['rho0'] > 30:  # 密度范围放宽到30 g/cm³
-            errors.append(f"{material_type}初始密度应在(0,30] g/cm³，当前值: {data['rho0']:.4f}")
+    # 基本物理约束检查
+    if 'rho0' in data and data['rho0'] is not None and (data['rho0'] <= 0 or data['rho0'] > 20):
+        errors.append(f"{material_type}初始密度必须为正数且通常小于20 g/cm³，当前值: {data['rho0']}")
     
-    if 'Us' in data and data['Us'] is not None and data['Us'] <= tolerance:
-        errors.append(f"{material_type}冲击波速度必须大于{tolerance} km/s，当前值: {data['Us']:.4f}")
+    if 'Us' in data and data['Us'] is not None and data['Us'] <= 0:
+        errors.append(f"{material_type}冲击波速度必须为正数，当前值: {data['Us']}")
     
-    if 'Up' in data and data['Up'] is not None and data['Up'] < -tolerance:  # 允许微小负值（计算误差）
-        errors.append(f"{material_type}粒子速度不应小于-{tolerance} km/s，当前值: {data['Up']:.4f}")
+    if 'Up' in data and data['Up'] is not None and data['Up'] < 0:
+        errors.append(f"{material_type}粒子速度不能为负数，当前值: {data['Up']}")
     
-    # Hugoniot关系检查：冲击波速度 ≥ 粒子速度 - 容忍度（避免严格小于导致的误判）
+    # Hugoniot关系检查：冲击波速度必须大于粒子速度
     if 'Us' in data and 'Up' in data and data['Us'] is not None and data['Up'] is not None:
-        if data['Us'] <= data['Up'] - tolerance:
-            errors.append(f"{material_type}冲击波速度(Us={data['Us']:.4f})应大于粒子速度(Up={data['Up']:.4f})")
+        if data['Us'] <= data['Up'] + 1e-6:  # 考虑浮点数精度
+            errors.append(f"{material_type}冲击波速度(Us={data['Us']})必须大于粒子速度(Up={data['Up']})")
     
-    # 压力计算检查：允许20%误差（适应实验数据波动）
+    # 压力计算检查：基于动量守恒 P = rho0 * Us * Up
     if 'P' in data and 'rho0' in data and 'Us' in data and 'Up' in data:
-        if None not in [data['P'], data['rho0'], data['Us'], data['Up']] and data['P'] > tolerance:
+        if None not in [data['P'], data['rho0'], data['Us'], data['Up']]:
             calculated_P = data['rho0'] * data['Us'] * data['Up']
-            if abs(data['P'] - calculated_P) > 0.2 * calculated_P:  # 误差放宽到20%
-                errors.append(f"{material_type}压力值与动量守恒计算不符：输入P={data['P']:.4f}, 计算值={calculated_P:.4f}")
+            if abs(data['P'] - calculated_P) > 0.1 * calculated_P:  # 允许10%误差
+                errors.append(f"{material_type}压力值与动量守恒计算不符，输入P={data['P']}, 计算值={calculated_P:.4f}")
     
-    # 密度关系检查：压缩密度 ≥ 初始密度 - 容忍度
+    # 密度关系检查：压缩密度必须大于初始密度
     if 'rho' in data and 'rho0' in data and data['rho'] is not None and data['rho0'] is not None:
-        if data['rho'] <= data['rho0'] - tolerance:
-            errors.append(f"{material_type}压缩密度(rho={data['rho']:.4f})应大于初始密度(rho0={data['rho0']:.4f})")
+        if data['rho'] <= data['rho0'] - 1e-6:  # 考虑浮点数精度
+            errors.append(f"{material_type}压缩密度(rho={data['rho']})必须大于初始密度(rho0={data['rho0']})")
     
-    # 比体积比检查：允许微小超过1（计算误差）
-    if 'V_V0' in data and data['V_V0'] is not None and data['V_V0'] >= 1 + tolerance:
-        errors.append(f"{material_type}比体积比(V/V0={data['V_V0']:.4f})应小于1.0")
+    # 比体积比检查：必须小于1
+    if 'V_V0' in data and data['V_V0'] is not None and data['V_V0'] >= 1 + 1e-6:
+        errors.append(f"{material_type}比体积比(V/V0={data['V_V0']})必须小于1")
     
-    # 温度检查：冲击温度应高于100K（放宽室温限制）
-    if 'T' in data and data['T'] is not None and data['T'] < 100:
-        errors.append(f"{material_type}冲击温度(T={data['T']:.0f})异常低，建议检查")
+    # 温度检查：冲击温度应高于室温
+    if 'T' in data and data['T'] is not None and data['T'] < 200:  # 低于200K视为异常
+        errors.append(f"{material_type}冲击温度(T={data['T']})异常低，应高于室温(约300K)")
     
-    # 格吕奈森系数检查：范围放宽到0.1-10
+    # 格吕奈森系数检查：通常在0.5到5之间
     if 'gamma' in data and data['gamma'] is not None:
-        if data['gamma'] < 0.1 or data['gamma'] > 10:
-            errors.append(f"{material_type}格吕奈森系数(gamma={data['gamma']:.4f})应在0.1-10之间")
+        if data['gamma'] <= 0 or data['gamma'] > 10:
+            errors.append(f"{material_type}格吕奈森系数(gamma={data['gamma']})应在0到10之间")
     
     return errors
 
@@ -297,7 +294,7 @@ def get_material_data(material_name, fields=None):
         # 转换为DataFrame
         df = pd.DataFrame(result) if result else pd.DataFrame()
         
-        # 验证并清理数据（使用优化后的物理检查）
+        # 验证并清理数据
         if not df.empty:
             invalid_indices = []
             for idx, row in df.iterrows():
@@ -737,22 +734,19 @@ def view_database():
                     on_click=lambda: st.success("模板已准备好下载，包含符合物理规律的示例数据")
                 )
 
-# ------------------------------
-# 核心优化2：冲击波参数计算（参考新代码的容忍度和异常处理）
-# ------------------------------
+# 冲击波参数计算（包含温度计算）
 def calculate_shock_parameters(U_s, u_p, rho0, gamma=2.0, Cv=385, T0=300, calculate_temp=True):
-    """根据Rankine-Hugoniot守恒关系计算冲击波参数，增加物理约束容忍度"""
-    tolerance = 1e-3  # 数值计算容忍度
-    
-    # 物理约束检查（放宽浮点数误差）
-    if U_s <= u_p - tolerance:
-        raise ValueError(f"冲击波速度 (Us={U_s:.4f}) 必须大于粒子速度 (Up={u_p:.4f})（容忍误差{tolerance}）")
-    if rho0 <= tolerance:
-        raise ValueError(f"初始密度 (rho0={rho0:.4f}) 必须大于{ tolerance } g/cm³")
-    if U_s <= tolerance or u_p < -tolerance:
-        raise ValueError(f"冲击波速度必须>={tolerance} km/s，粒子速度不应<-{tolerance} km/s")
+    """根据Rankine-Hugoniot守恒关系计算冲击波参数，增加物理约束检查"""
+    # 物理约束检查
+    if U_s <= u_p:
+        raise ValueError(f"冲击波速度 (Us={U_s}) 必须大于粒子速度 (Up={u_p})")
+    if rho0 <= 0:
+        raise ValueError(f"初始密度 (rho0={rho0}) 必须为正数")
+    if U_s <= 0 or u_p < 0:
+        raise ValueError(f"速度参数必须非负，且冲击波速度必须为正数")
     
     # 动量守恒: P = rho0 * U_s * u_p
+    # 单位转换: (g/cm³) * (km/s) * (km/s) = 1e3 kg/m³ * 1e3 m/s * 1e3 m/s = 1e9 Pa = 1 GPa
     P = rho0 * U_s * u_p
     
     # 质量守恒推导比体积: V = (1/rho0) * (1 - u_p/U_s)
@@ -764,30 +758,31 @@ def calculate_shock_parameters(U_s, u_p, rho0, gamma=2.0, Cv=385, T0=300, calcul
     # 比体积比: V/V0 = 1 - u_p/U_s
     V_V0 = V * rho0  # 由于V0 = 1/rho0，V/V0 = V * rho0
     
-    # 检查计算结果的物理合理性（增加容忍度）
-    if rho <= rho0 - tolerance:
-        raise ValueError(f"压缩密度 (rho={rho:.4f}) 必须大于初始密度 (rho0={rho0:.4f})（容忍误差{ tolerance }）")
-    if V_V0 >= 1 + tolerance:
-        raise ValueError(f"比体积比 (V/V0={V_V0:.4f}) 必须小于1.0（容忍误差{ tolerance }）")
-    if P <= -tolerance:
-        raise ValueError(f"冲击压力 (P={P:.4f}) 必须为正数（容忍误差{ tolerance }）")
+    # 检查计算结果的物理合理性
+    if rho <= rho0:
+        raise ValueError(f"计算的压缩密度 (rho={rho}) 必须大于初始密度 (rho0={rho0})")
+    if V_V0 >= 1:
+        raise ValueError(f"计算的比体积比 (V/V0={V_V0}) 必须小于1")
+    if P <= 0:
+        raise ValueError(f"计算的压力 (P={P}) 必须为正数")
     
     T = None
     if calculate_temp:
         # 温度计算（Mie-Grüneisen方程近似）
+        # 单位转换: 1 GPa·cm³/g = 1e5 J/kg
         E_shock = 0.5 * P * (1/rho0 - V) * 1e6  # 冲击内能 (J/kg)
+        # 基于Mie-Grüneisen方程简化形式（适用于弱冲击，忽略体积修正项）
         T = T0 + (E_shock) / (Cv * (1 + gamma/2))  # 冲击温度 (K)
         
-        if T < 100:  # 放宽温度下限至100K
-            raise ValueError(f"冲击温度 (T={T:.0f}K) 异常低（建议>100K）")
+        if T < T0:
+            raise ValueError(f"计算的冲击温度 (T={T}) 必须高于初始温度 (T0={T0})")
     
     return P, V, rho, V_V0, T
 
 # Hugoniot关系拟合 - 优化数据预处理
 def fit_hugoniot(df):
-    # 过滤物理上无效的数据（使用优化后的约束）
-    tolerance = 1e-3
-    df = df[(df['Us'] > df['Up'] - tolerance) & (df['Us'] > tolerance) & (df['Up'] >= -tolerance)]
+    # 过滤物理上无效的数据
+    df = df[(df['Us'] > df['Up']) & (df['Us'] > 0) & (df['Up'] >= 0)]
     if len(df) < 2:
         return 0, 0  # 数据不足时返回默认值
         
@@ -797,13 +792,13 @@ def fit_hugoniot(df):
     S = coeffs[0]    # 斜率参数
     C0 = coeffs[1]   # 截距（零压声速）
     
-    # 物理约束：S通常在1.0-3.0之间，C0应为正数（增加容忍度）
-    if C0 <= -tolerance:
-        st.warning(f"Hugoniot拟合的体声速 (C0={C0:.4f}) 为负，已调整为合理值")
+    # 物理约束：S通常在1.3-2.0之间，C0应为正数
+    if C0 <= 0:
+        st.warning(f"Hugoniot拟合的体声速 (C0={C0}) 为非正数，已调整为合理值")
         C0 = max(1.0, abs(C0))  # 确保体声速为正数且合理
         
-    if S < 1.0 - tolerance or S > 3.0 + tolerance:
-        st.warning(f"Hugoniot参数 (S={S:.4f}) 超出典型范围 (1.0-3.0)，可能存在数据问题")
+    if S < 1.0 or S > 3.0:
+        st.warning(f"Hugoniot参数 (S={S}) 超出典型范围 (1.0-3.0)，可能存在数据问题")
         
     return C0, S
 
@@ -813,9 +808,8 @@ def fit_material_data(df, material_name, material_type):
         st.warning(f"{material_type}材料 '{material_name}' 没有数据")
         return None
     
-    # 过滤异常值（使用优化后的约束）
-    tolerance = 1e-3
-    df = df[(df['Us'] > df['Up'] - tolerance) & (df['Us'] > tolerance) & (df['Up'] >= -tolerance)]
+    # 过滤异常值
+    df = df[(df['Us'] > df['Up']) & (df['Us'] > 0) & (df['Up'] >= 0)]
     if len(df) < 2:
         st.warning(f"{material_type}材料 '{material_name}' 的有效数据不足，无法进行拟合")
         return None
@@ -831,13 +825,13 @@ def fit_material_data(df, material_name, material_type):
     S = model.coef_[0]       # Hugoniot参数S
     y_pred = model.predict(X)
     
-    # 物理约束检查（增加容忍度）
-    if C0 <= -tolerance:
-        st.warning(f"{material_type}材料 '{material_name}' 拟合的体声速 (C0={C0:.4f}) 为负，已调整")
+    # 物理约束检查
+    if C0 <= 0:
+        st.warning(f"{material_type}材料 '{material_name}' 拟合的体声速 (C0={C0}) 为非正数，已调整")
         C0 = max(1.0, abs(C0))
         
-    if S < 1.0 - tolerance or S > 3.0 + tolerance:
-        st.warning(f"{material_type}材料 '{material_name}' 的Hugoniot参数 (S={S:.4f}) 超出典型范围 (1.0-3.0)")
+    if S < 1.0 or S > 3.0:
+        st.warning(f"{material_type}材料 '{material_name}' 的Hugoniot参数 (S={S}) 超出典型范围 (1.0-3.0)")
     
     # 拟合误差计算
     r2 = r2_score(y, y_pred)
@@ -893,14 +887,14 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", di
     
     # 物理参数范围提示
     param_ranges = {
-        'rh0': "典型范围: 0.1-30 g/cm³",  # 范围放宽
-        'D': "典型范围: 0.1-50 km/s",    # 范围放宽
-        'u': "典型范围: 0-30 km/s (小于冲击波速度)",  # 范围放宽
-        'P': "典型范围: 0.001-10000 GPa",  # 范围放宽
-        'gamma': "典型范围: 0.1-10.0",     # 范围放宽
-        'T': "典型范围: 100-100000 K",     # 范围放宽
-        'C0': "典型范围: 0.1-10 km/s",     # 范围放宽
-        'S': "典型范围: 1.0-3.0"
+        'rh0': "典型范围: 0.1-20 g/cm³",
+        'D': "典型范围: 1-30 km/s",
+        'u': "典型范围: 0-20 km/s (小于冲击波速度)",
+        'P': "典型范围: 0.1-5000 GPa",
+        'gamma': "典型范围: 0.5-5.0",
+        'T': "典型范围: 300-100000 K",
+        'C0': "典型范围: 1-10 km/s",
+        'S': "典型范围: 1.3-2.0"
     }
     
     # 提取参数类型前缀
@@ -914,15 +908,17 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", di
             return symbols(var_name)
         try:
             val_num = float(val)
-            # 基本物理范围检查（放宽提示）
-            if param_type == 'rh0' and (val_num < 0.1 or val_num > 30):
-                st.warning(f"{label} 超出典型范围 (0.1-30 g/cm³)")
-            elif param_type == 'D' and (val_num < 0.1 or val_num > 50):
-                st.warning(f"{label} 超出典型范围 (0.1-50 km/s)")
-            elif param_type == 'u' and (val_num < 0 or val_num > 30):
-                st.warning(f"{label} 超出典型范围 (0-30 km/s)")
-            elif param_type == 'P' and (val_num < 0.001 or val_num > 10000):
-                st.warning(f"{label} 超出典型范围 (0.001-10000 GPa)")
+            # 基本物理范围检查
+            if param_type == 'rh0' and (val_num <= 0 or val_num > 20):
+                st.warning(f"{label} 超出典型范围 (0.1-20 g/cm³)")
+            elif param_type == 'D' and (val_num <= 0 or val_num > 30):
+                st.warning(f"{label} 超出典型范围 (1-30 km/s)")
+            elif param_type == 'u' and (val_num < 0 or val_num > 20):
+                st.warning(f"{label} 超出典型范围 (0-20 km/s)")
+            elif param_type == 'P' and (val_num <= 0 or val_num > 5000):
+                st.warning(f"{label} 超出典型范围 (0.1-5000 GPa)")
+            elif param_type == 'gamma' and (val_num <= 0 or val_num > 10):
+                st.warning(f"{label} 超出典型范围 (0.5-5.0)")
             return [val_num]
         except ValueError:
             st.error("请输入有效的数字 (例如: 3.14)")
@@ -946,14 +942,14 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", di
                 
             # 检查范围
             for val_num in values:
-                if param_type == 'rh0' and (val_num < 0.1 or val_num > 30):
-                    st.warning(f"{label} 包含超出典型范围 (0.1-30 g/cm³) 的值")
+                if param_type == 'rh0' and (val_num <= 0 or val_num > 20):
+                    st.warning(f"{label} 包含超出典型范围 (0.1-20 g/cm³) 的值")
                     break
-                elif param_type == 'D' and (val_num < 0.1 or val_num > 50):
-                    st.warning(f"{label} 包含超出典型范围 (0.1-50 km/s) 的值")
+                elif param_type == 'D' and (val_num <= 0 or val_num > 30):
+                    st.warning(f"{label} 包含超出典型范围 (1-30 km/s) 的值")
                     break
-                elif param_type == 'u' and (val_num < 0 or val_num > 30):
-                    st.warning(f"{label} 包含超出典型范围 (0-30 km/s) 的值")
+                elif param_type == 'u' and (val_num < 0 or val_num > 20):
+                    st.warning(f"{label} 包含超出典型范围 (0-20 km/s) 的值")
                     break
                     
             return values
@@ -1007,16 +1003,16 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", di
                 st.warning("步长大于范围差值，将只返回起始值")
                 return [start]
                 
-            # 检查范围是否符合物理约束（放宽）
+            # 检查范围是否符合物理约束
             if param_type == 'rh0':
-                if start < 0.1 or end > 30:
-                    st.warning(f"{label} 范围超出典型物理范围 (0.1-30 g/cm³)")
+                if start < 0.1 or end > 20:
+                    st.warning(f"{label} 范围超出典型物理范围 (0.1-20 g/cm³)")
             elif param_type == 'D':
-                if start < 0.1 or end > 50:
-                    st.warning(f"{label} 范围超出典型物理范围 (0.1-50 km/s)")
+                if start < 1 or end > 30:
+                    st.warning(f"{label} 范围超出典型物理范围 (1-30 km/s)")
             elif param_type == 'u':
-                if start < 0 or end > 30:
-                    st.warning(f"{label} 范围超出典型物理范围 (0-30 km/s)")
+                if start < 0 or end > 20:
+                    st.warning(f"{label} 范围超出典型物理范围 (0-20 km/s)")
                     
             # 生成范围值
             values = []
@@ -1030,87 +1026,9 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", di
             st.error("请输入有效的范围数字 (例如: 开始=1.0, 结束=5.0, 步长=1.0)")
             return None
 
-# ------------------------------
-# 核心优化3：数值求解器（参考新代码的联立求解、边界调整、解修正）
-# ------------------------------
-def generate_better_initial_guess(known_params, remaining_vars):
-    """生成更合理的初始猜测值（参考新代码的参数依赖关系）"""
-    initial_guess = {}
-    tolerance = 1e-3
-    
-    for var in remaining_vars:
-        var_str = str(var)
-        # 1. 飞片关键参数联立（u_f, D_f）：基于w、C0f、Sf推导
-        if var_str == 'uf' and 'w' in known_params and 'C0f' in known_params and 'Sf' in known_params:
-            denominator = 1 + known_params['Sf']
-            if abs(denominator) > tolerance:
-                initial_guess[var] = (known_params['w'] - known_params['C0f']) / denominator
-                continue
-        elif var_str == 'Df' and 'w' in known_params and 'C0f' in known_params and 'Sf' in known_params:
-            denominator = 1 + known_params['Sf']
-            if abs(denominator) > tolerance:
-                initial_guess[var] = (known_params['w'] + known_params['C0f'] * known_params['Sf']) / denominator
-                continue
-        
-        # 2. 样品/基板关键参数联立（u_s/D_s, u_b/D_b）：基于P、rho0、C0、S推导
-        if var_str == 'us' and 'Ps' in known_params and 'rh0s' in known_params and 'C0s' in known_params and 'Ss' in known_params:
-            a = known_params['rh0s'] * known_params['Ss']
-            b = known_params['rh0s'] * known_params['C0s']
-            c = -known_params['Ps']
-            delta = b**2 - 4*a*c
-            if delta >= 0 and a != 0:
-                sqrt_delta = np.sqrt(delta)
-                u1 = (-b + sqrt_delta) / (2*a)
-                initial_guess[var] = max(u1, tolerance)  # 取正根
-                continue
-        elif var_str == 'Ds' and 'us' in known_params and 'C0s' in known_params and 'Ss' in known_params:
-            initial_guess[var] = known_params['C0s'] + known_params['Ss'] * known_params['us']
-            continue
-        
-        if var_str == 'ub' and 'Pb' in known_params and 'rh0b' in known_params and 'C0b' in known_params and 'Sb' in known_params:
-            a = known_params['rh0b'] * known_params['Sb']
-            b = known_params['rh0b'] * known_params['C0b']
-            c = -known_params['Pb']
-            delta = b**2 - 4*a*c
-            if delta >= 0 and a != 0:
-                sqrt_delta = np.sqrt(delta)
-                u1 = (-b + sqrt_delta) / (2*a)
-                initial_guess[var] = max(u1, tolerance)  # 取正根
-                continue
-        elif var_str == 'Db' and 'ub' in known_params and 'C0b' in known_params and 'Sb' in known_params:
-            initial_guess[var] = known_params['C0b'] + known_params['Sb'] * known_params['ub']
-            continue
-        
-        # 3. 基础参数推导（动量守恒、质量守恒）
-        if var_str == 'Pf' and 'rh0f' in known_params and 'Df' in known_params and 'uf' in known_params:
-            initial_guess[var] = known_params['rh0f'] * known_params['Df'] * known_params['uf']
-            continue
-        elif var_str == 'rhf' and 'rh0f' in known_params and 'Df' in known_params and 'uf' in known_params:
-            denominator = known_params['Df'] - known_params['uf']
-            if abs(denominator) > tolerance:
-                initial_guess[var] = (known_params['rh0f'] * known_params['Df']) / denominator
-                continue
-        
-        # 4. 默认合理值（基于物理范围）
-        if var_str.startswith(('rh0', 'rh')):
-            initial_guess[var] = known_params.get('rh0f', 8.0)  # 参考飞片密度
-        elif var_str.startswith(('D', 'C0', 'u')):
-            initial_guess[var] = known_params.get('w', 10.0) / 2  # 参考飞片速度的一半
-        elif var_str == 'w':
-            initial_guess[var] = 10.0
-        elif var_str.startswith('P'):
-            initial_guess[var] = 100.0
-        elif var_str.startswith('gamma'):
-            initial_guess[var] = 2.0
-        elif var_str.startswith('T'):
-            initial_guess[var] = 3000.0
-        else:
-            initial_guess[var] = 1.0
-    
-    return initial_guess
-
+# 数值求解器（改进版本，更好地处理未知数）
 def solve_numerically(eqs, sym_vars, initial_guess):
-    """使用数值方法求解方程组（优化边界、迭代参数、解修正）"""
+    """使用数值方法求解方程组，增加物理约束检查"""
     var_list = list(sym_vars.values())
     
     def residuals(x):
@@ -1128,109 +1046,74 @@ def solve_numerically(eqs, sym_vars, initial_guess):
             else:
                 # 正常计算数值残差
                 try:
+                    # 简化表达式以提高计算稳定性
                     simplified = simplify(substituted)
                     residuals.append(float(abs(simplified.evalf())))
                 except:
                     residuals.append(1e10)  # 计算失败时给予大残差
         return residuals
     
-    # 优化边界设置（参考新代码，扩大搜索范围）
+    # 根据初始猜测值的长度动态生成边界
     n_vars = len(initial_guess)
-    lower_bounds = [1e-3] * n_vars  # 更小的下界（允许接近0的值）
-    upper_bounds = [100.0] * n_vars  # 更大的上界（覆盖更广物理范围）
-    
-    # 根据变量类型调整特定变量的边界
+    lower_bounds = [0.1] * n_vars  # 为每个变量设置默认下界
+    upper_bounds = [30.0] * n_vars  # 为每个变量设置默认上界
+    # 根据变量类型调整特定变量的边界，更严格地符合物理规律
     for i, var in enumerate(initial_guess.keys()):
         var_str = str(var)
         if var_str.startswith(('rh0', 'rh')):  # 密度
-            lower_bounds[i] = 1e-3  # g/cm³
-            upper_bounds[i] = 30.0  # 放宽到30
+            lower_bounds[i] = 0.1  # g/cm³
+            upper_bounds[i] = 20.0  # g/cm³
         elif var_str.startswith(('D', 'C0', 'u', 'w')):  # 速度
-            lower_bounds[i] = 1e-3  # km/s
-            upper_bounds[i] = 50.0  # 放宽到50
+            lower_bounds[i] = 0.1  # km/s
+            upper_bounds[i] = 30.0  # km/s
         elif var_str.startswith(('P', 'E')):  # 压力/能量
-            lower_bounds[i] = 1e-4  # GPa
-            upper_bounds[i] = 10000.0  # 放宽到10000
+            lower_bounds[i] = 0.01  # GPa
+            upper_bounds[i] = 5000.0  # GPa
         elif var_str.startswith('gamma'):  # 格吕奈森系数
-            lower_bounds[i] = 0.1
-            upper_bounds[i] = 10.0
+            lower_bounds[i] = 0.5
+            upper_bounds[i] = 5.0
         elif var_str.startswith('T'):  # 温度
-            lower_bounds[i] = 100.0
-            upper_bounds[i] = 1e6
+            lower_bounds[i] = 300.0  # 不低于室温
+            upper_bounds[i] = 1e5  # K
     
-    # 执行最小二乘优化（优化迭代参数）
+    # 执行最小二乘优化
     result = least_squares(
         residuals,
         list(initial_guess.values()),
         bounds=(lower_bounds, upper_bounds),
-        ftol=1e-6,  # 适当降低精度要求，提高收敛性
-        xtol=1e-6,
-        gtol=1e-6,
-        max_nfev=10000,  # 增加迭代次数
-        loss='soft_l1',  # 鲁棒损失函数，减少异常值影响
-        f_scale=0.1
+        ftol=1e-8,  # 提高精度
+        max_nfev=5000  # 增加迭代次数以提高收敛性
     )
     
     if result.success:
         solution = {str(var_list[i]): float(result.x[i]) for i in range(len(result.x))}
-        tolerance = 1e-3
         
-        # 验证解的物理合理性（参考新代码的容忍度）
+        # 验证解的物理合理性
         valid = True
         
-        # 1. 冲击波速度 ≥ 粒子速度 - 容忍度
-        if 'Df' in solution and 'uf' in solution and solution['Df'] <= solution['uf'] - tolerance:
+        # 检查冲击波速度大于粒子速度
+        if 'Df' in solution and 'uf' in solution and solution['Df'] <= solution['uf']:
             valid = False
-        if 'Db' in solution and 'ub' in solution and solution['Db'] <= solution['ub'] - tolerance:
+        if 'Db' in solution and 'ub' in solution and solution['Db'] <= solution['ub']:
             valid = False
-        if 'Ds' in solution and 'us' in solution and solution['Ds'] <= solution['us'] - tolerance:
-            valid = False
-            
-        # 2. 压缩密度 ≥ 初始密度 - 容忍度
-        if 'rh0f' in solution and 'rhf' in solution and solution['rhf'] <= solution['rh0f'] - tolerance:
-            valid = False
-        if 'rh0b' in solution and 'rhb' in solution and solution['rhb'] <= solution['rh0b'] - tolerance:
-            valid = False
-        if 'rh0s' in solution and 'rhs' in solution and solution['rhs'] <= solution['rh0s'] - tolerance:
+        if 'Ds' in solution and 'us' in solution and solution['Ds'] <= solution['us']:
             valid = False
             
-        # 3. 压力为正
+        # 检查压缩密度大于初始密度
+        if 'rh0f' in solution and 'rhf' in solution and solution['rhf'] <= solution['rh0f']:
+            valid = False
+        if 'rh0b' in solution and 'rhb' in solution and solution['rhb'] <= solution['rh0b']:
+            valid = False
+        if 'rh0s' in solution and 'rhs' in solution and solution['rhs'] <= solution['rh0s']:
+            valid = False
+            
+        # 检查压力为正数
         for p_var in ['Pf', 'Pb', 'Ps']:
-            if p_var in solution and solution[p_var] <= -tolerance:
+            if p_var in solution and solution[p_var] <= 0:
                 valid = False
                 break
-        
-        # 4. 尝试修正轻微违反约束的解（关键优化）
+                
         if not valid:
-            adjusted = False
-            # 修正冲击波速度
-            if 'Df' in solution and 'uf' in solution and solution['Df'] <= solution['uf']:
-                solution['Df'] = solution['uf'] + tolerance
-                adjusted = True
-            if 'Db' in solution and 'ub' in solution and solution['Db'] <= solution['ub']:
-                solution['Db'] = solution['ub'] + tolerance
-                adjusted = True
-            if 'Ds' in solution and 'us' in solution and solution['Ds'] <= solution['us']:
-                solution['Ds'] = solution['us'] + tolerance
-                adjusted = True
-            # 修正压缩密度
-            if 'rh0f' in solution and 'rhf' in solution and solution['rhf'] <= solution['rh0f']:
-                solution['rhf'] = solution['rh0f'] + tolerance
-                adjusted = True
-            if 'rh0b' in solution and 'rhb' in solution and solution['rhb'] <= solution['rh0b']:
-                solution['rhb'] = solution['rh0b'] + tolerance
-                adjusted = True
-            if 'rh0s' in solution and 'rhs' in solution and solution['rhs'] <= solution['rh0s']:
-                solution['rhs'] = solution['rh0s'] + tolerance
-                adjusted = True
-            # 修正压力
-            for p_var in ['Pf', 'Pb', 'Ps']:
-                if p_var in solution and solution[p_var] <= 0:
-                    solution[p_var] = tolerance
-                    adjusted = True
-            
-            if adjusted:
-                return solution  # 返回修正后的解
             return None
             
         return solution
@@ -1276,15 +1159,15 @@ def generate_shock_plots(df, C0, S, material_name, material_type):
         )
     
     # 确保Hugoniot参数合理
-    tolerance = 1e-3
-    if C0 <= -tolerance:
+    if C0 <= 0:
         C0 = 3.0  # 默认合理值
-    if S < 1.0 - tolerance or S > 3.0 + tolerance:
+    if S < 1.0 or S > 3.0:
         S = 1.5  # 默认合理值
         
-    u_p_range = np.linspace(0, min(30, df['Up'].max()*1.1), 100)  # 限制在放宽的物理范围
+    u_p_range = np.linspace(0, min(20, df['Up'].max()*1.1), 100)  # 限制在物理合理范围内
     U_s_fit = C0 + S * u_p_range  # Hugoniot关系
     
+    # 移除Us = Up线的绘制
     axs[0, 0].plot(u_p_range, U_s_fit, 'r-', label=f'Fit: Us = {C0:.2f} + {S:.2f}·Up')
     axs[0, 0].set_xlabel('Particle Velocity Up (km/s)')
     axs[0, 0].set_ylabel('Shock Velocity Us (km/s)')
@@ -1303,511 +1186,1171 @@ def generate_shock_plots(df, C0, S, material_name, material_type):
     
     # 使用数据中的平均密度而非硬编码值
     rho0 = df['rho0'].mean() if not df.empty else 8.96
-    # 计算压力范围并绘图
-    P_range = rho0 * (C0 + S * u_p_range) * u_p_range  # P = rho0 * Us * Up
-    axs[0, 1].plot(u_p_range, P_range, 'r-', label=f'P = {rho0:.2f}·Us·Up')
+    P_range = rho0 * U_s_fit * u_p_range  # 动量守恒关系 P = ρ0·Us·Up
+    
+    axs[0, 1].plot(u_p_range, P_range, 'r-', label='Theoretical: P = ρ0·Us·Up')
     axs[0, 1].set_xlabel('Particle Velocity Up (km/s)')
-    axs[0, 1].set_ylabel('Shock Pressure P (GPa)')
+    axs[0, 1].set_ylabel('Pressure P (GPa)')
     axs[0, 1].legend()
     axs[0, 1].grid(True)
     
-    # P vs Us
+    # P vs V/V0
     for method in methods:
         method_df = df[df['exp_method'] == method]
         color = method_colors.get(method.lower(), default_color)
         axs[1, 0].scatter(
-            method_df['Us'], method_df['P'], 
+            method_df['V_V0'], method_df['P'], 
             label=f'{method}' if method == methods[0] else "",
             color=color, alpha=0.7
         )
     
-    # 使用Hugoniot关系从Us反推Up: Up = (Us - C0)/S
-    u_p_from_Us = (u_p_range + C0)  # 修正后的范围计算
-    if abs(S) > tolerance:  # 避免除以零
-        u_p_from_Us = (u_p_range - C0) / S
-        u_p_from_Us = np.clip(u_p_from_Us, 0, None)  # 确保非负
-        P_from_Us = rho0 * u_p_range * u_p_from_Us
-        axs[1, 0].plot(u_p_range, P_from_Us, 'r-', label=f'P = {rho0:.2f}·Us·Up')
+    V_V0_range = 1 - u_p_range / U_s_fit  # V/V0 = 1 - Up/Us
     
-    axs[1, 0].set_xlabel('Shock Velocity Us (km/s)')
-    axs[1, 0].set_ylabel('Shock Pressure P (GPa)')
+    # 添加物理约束线：V/V0 = 1（比体积比必须小于1）
+    axs[1, 0].axvline(x=1.0, color='k', linestyle='--', label='V/V0 = 1 (physical boundary)')
+    axs[1, 0].plot(V_V0_range, P_range, 'r-', label='Theoretical Curve')
+    axs[1, 0].set_xlabel('Specific Volume Ratio V/V0')
+    axs[1, 0].set_ylabel('Pressure P (GPa)')
     axs[1, 0].legend()
     axs[1, 0].grid(True)
     
-    # rho vs Up (压缩密度 vs 粒子速度)
+    # rho vs P
     for method in methods:
         method_df = df[df['exp_method'] == method]
         color = method_colors.get(method.lower(), default_color)
         axs[1, 1].scatter(
-            method_df['Up'], method_df['rho'], 
+            method_df['P'], method_df['rho'], 
             label=f'{method}' if method == methods[0] else "",
             color=color, alpha=0.7
         )
     
-    # 计算压缩密度: rho = rho0 * Us / (Us - Up) = rho0 / (1 - Up/Us)
-    if len(u_p_range) > 0 and all(Us > Up - tolerance for Us, Up in zip(U_s_fit, u_p_range)):
-        rho_range = rho0 * U_s_fit / (U_s_fit - u_p_range)
-        axs[1, 1].plot(u_p_range, rho_range, 'r-', label=f'rho = rho0·Us/(Us-Up)')
+    rho_range = rho0 * U_s_fit / (U_s_fit - u_p_range)  # rho = rho0·Us/(Us-Up)
     
-    axs[1, 1].set_xlabel('Particle Velocity Up (km/s)')
-    axs[1, 1].set_ylabel('Compressed Density rho (g/cm³)')
-    axs[1, 1].axhline(y=rho0, color='k', linestyle='--', label=f'Initial Density: {rho0:.2f} g/cm³')
+    # 添加初始密度参考线
+    axs[1, 1].axhline(y=rho0, color='k', linestyle='--', label=f'Initial density: {rho0:.2f} g/cm³')
+    axs[1, 1].plot(P_range, rho_range, 'r-', label='Theoretical Curve')
+    axs[1, 1].set_xlabel('Pressure P (GPa)')
+    axs[1, 1].set_ylabel('Density ρ (g/cm³)')
     axs[1, 1].legend()
     axs[1, 1].grid(True)
     
     plt.tight_layout()
-    
-    # 保存图像到BytesIO
+    return fig
+
+def save_plot_to_bytes(fig):
     buf = BytesIO()
-    plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')  # 降低分辨率以提高速度
     buf.seek(0)
     return buf
 
-# 主函数
-def main():
-    st.set_page_config(
-        page_title="冲击波参数计算与分析系统",
-        page_icon="⚡",
-        layout="wide"
-    )
+# 材料图像显示辅助函数
+def display_material_plots(df, material_name, material_type):
+    if not df.empty:
+        with st.expander(f"查看 {material_type} 材料 {material_name} 的冲击波关系图", expanded=True):
+            C0, S = fit_hugoniot(df)
+            fig = generate_shock_plots(df, C0, S, material_name, material_type)
+            st.pyplot(fig)
+            buf = save_plot_to_bytes(fig)
+            
+            material_type_en = {
+                "飞片": "flyer",
+                "基板": "substrate",
+                "样品": "sample"
+            }.get(material_type, material_type.lower())
+            download_label = f"下载 {material_type} 材料 {material_name} 的冲击波关系图"
+            file_name = f"{material_type_en}_{material_name}_shock_relations.png"
+                
+            st.download_button(
+                label=download_label,
+                data=buf,
+                file_name=file_name,
+                mime="image/png"
+            )
+    else:
+        st.info(f"没有可用数据生成 {material_type} 材料 {material_name} 的图表")
+
+# 结果绘图函数 - 使用英文标签
+@st.cache_data(ttl=3600)  # 缓存图像结果
+def plot_results_streamlit(results, calculate_temp=True):
+    if not results:
+        return None
+        
+    # 数据量大时进行采样
+    if len(results) > 1000:
+        results = results[:1000]
+        
+    # 确定子图数量
+    subplot_count = 4 if calculate_temp else 3
+    fig = plt.figure(figsize=(18, 9) if calculate_temp else (18, 7))
     
-    st.title("冲击波参数计算与分析系统 ⚡")
-    st.markdown("""
-    该系统用于计算和分析冲击波物理参数，基于Rankine-Hugoniot守恒关系和Hugoniot状态方程。
-    支持飞片-样品-基板全链路冲击波参数求解，包含物理合理性自动检查和实验数据拟合功能。
+    # 原始数据
+    pf_values = [r.get('Pf', 0) for r in results]
+    uf_values = [r.get('uf', 0) for r in results]
+    df_values = [r.get('Df', 0) for r in results]
+    rhf_values = [r.get('rhf', 0) for r in results]
+    
+    # 1. 压力-粒子速度图（带误差棒）
+    ax1 = fig.add_subplot(221 if calculate_temp else 221)
+    ax1.errorbar(uf_values, pf_values, 
+                 yerr=[r.get('Pf_err', 0.1) for r in results],
+                 xerr=[r.get('uf_err', 0.05) for r in results],
+                 fmt='bo', ecolor='r', capsize=5, label='Flyer data')
+    ax1.set_xlabel('粒子速度 Up (km/s)')
+    ax1.set_ylabel('冲击压力 P (GPa)')
+    ax1.set_title('压力-粒子速度关系（含误差范围）')
+    ax1.legend()
+    ax1.grid(True)
+    
+    # 2. 温度-压力图（仅当计算温度时显示）
+    ax2 = None
+    if calculate_temp:
+        # 温度相关数据
+        tf_values = [r.get('Tf', 0) for r in results]
+        tb_values = [r.get('Tb', 0) for r in results]
+        ts_values = [r.get('Ts', 0) for r in results]
+        
+        ax2 = fig.add_subplot(222)
+        ax2.scatter(pf_values, tf_values, c='orange', label='飞片温度')
+        # 添加室温参考线
+        ax2.axhline(y=300, color='k', linestyle='--', label='室温 (300 K)')
+        ax2.set_xlabel('冲击压力 P (GPa)')
+        ax2.set_ylabel('冲击温度 T (K)')
+        ax2.set_title('温度-压力关系')
+        ax2.legend()
+        ax2.grid(True)
+    
+    # 3. 冲击波速度-粒子速度图
+    ax3 = fig.add_subplot(223 if calculate_temp else 222)
+    ax3.scatter(uf_values, df_values, c='blue', label='飞片')
+    # 移除Us = Up线的绘制
+    ax3.set_xlabel('粒子速度 Up (km/s)')
+    ax3.set_ylabel('冲击波速度 Us (km/s)')
+    ax3.set_title('冲击波速度-粒子速度关系')
+    ax3.legend()
+    ax3.grid(True)
+    
+    # 4. 密度-压力图
+    ax4 = fig.add_subplot(224 if calculate_temp else 223)
+    ax4.scatter(pf_values, rhf_values, c='green', label='飞片')
+    # 添加初始密度参考线（如果有）
+    if results and 'rh0f' in results[0]:
+        avg_rh0 = np.mean([r.get('rh0f', 0) for r in results])
+        ax4.axhline(y=avg_rh0, color='k', linestyle='--', label=f'平均初始密度: {avg_rh0:.2f} g/cm³')
+    ax4.set_xlabel('冲击压力 P (GPa)')
+    ax4.set_ylabel('压缩密度 (g/cm³)')
+    ax4.set_title('密度-压力关系')
+    ax4.legend()
+    ax4.grid(True)
+    
+    plt.tight_layout()
+    return fig
+
+# 页面函数
+def home_page():
+    # 记录当前页面，用于返回功能
+    st.session_state.previous_page = "home"
+    st.title("冲击波参数计算与分析系统")
+    st.info("""
+    系统核心模型说明：
+    1. 基于Rankine-Hugoniot守恒方程组（质量、动量、能量守恒）
+    2. 假设条件：平面冲击波、稳定传播、初始压力可忽略
+    3. 单位系统：密度(g/cm³)、速度(km/s)、压力(GPa)
+    4. 关键物理约束：
+       - 冲击波速度(Us) > 粒子速度(Up)
+       - 压缩密度(ρ) > 初始密度(ρ₀)
+       - 比体积比(V/V₀) < 1
+       - 冲击压力(P) = ρ₀·Us·Up（动量守恒）
+       - Hugoniot关系：Us = C₀ + S·Up（C₀为体声速，S通常在1.3-2.0之间）
     """)
     
-    # 侧边栏导航
-    st.sidebar.title("功能导航")
-    option = st.sidebar.radio(
-        "选择功能模块",
-        ["参数计算", "数据拟合与分析", "数据库管理"]
-    )
+    # 查看数据库快捷入口
+    if st.button("查看数据库"):
+        st.session_state.page = "view_database"
+        st.rerun()
     
-    # 材料选择（全局）
+    st.write("选择操作模式：")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("使用数据库数据"):
+            st.session_state.page = "database_mode"
+            st.rerun()  # 立即刷新页面
+    with col2:
+        if st.button("手动输入参数"):
+            st.session_state.page = "manual_mode"
+            st.rerun()  # 立即刷新页面
+
+def database_mode_page():
+    # 记录当前页面，用于返回功能
+    st.session_state.previous_page = "database_mode"
+    st.title("数据库模式")
+    st.write("从数据库加载材料数据，基于Hugoniot关系拟合参数并求解")
+    st.success("提示：将参数留空将由系统根据物理规律自动求解")
+    
+    # 添加温度计算选项
+    calculate_temp = st.checkbox("进行温度相关计算", value=True, 
+                                 help="勾选以计算冲击温度，需要格吕奈森系数和比热容参数")
+    
+    # 查看数据库快捷入口
+    if st.button("查看数据库"):
+        st.session_state.page = "view_database"
+        st.rerun()
+    
     materials = get_all_materials()
-    if materials:
-        default_material_idx = materials.index("Copper") if "Copper" in materials else 0
-        selected_material = st.sidebar.selectbox(
-            "选择材料",
-            materials,
-            index=default_material_idx
-        )
-    else:
-        selected_material = st.sidebar.text_input("材料名称", "Copper")
-        st.sidebar.info("数据库中暂无材料数据，将使用默认参数")
+    if not materials:
+        st.error("数据库中没有可用材料")
+        return
     
-    # 温度计算选项
-    calculate_temp = st.sidebar.checkbox("计算冲击温度", value=True)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        flyer_material = st.selectbox("飞片材料", materials, key="flyer_material")
+    with col2:
+        base_material = st.selectbox("基板材料", materials, key="base_material")
+    with col3:
+        sample_material = st.selectbox("样品材料", materials, key="sample_material")
+    
+    # 按需查询字段以减少数据传输，确保包含exp_method
+    flyer_df = get_material_data(flyer_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho', 'exp_method', 'gamma'])
+    base_df = get_material_data(base_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho', 'exp_method', 'gamma'])
+    sample_df = get_material_data(sample_material, fields=['Us', 'Up', 'rho0', 'P', 'V_V0', 'rho', 'exp_method', 'gamma'])
+    
+    # 为每种材料类型拟合数据并清晰标注
+    with st.spinner(f"正在拟合飞片材料 {flyer_material} 数据..."):
+        flyer_fit = fit_material_data(flyer_df, flyer_material, "飞片")
+    
+    with st.spinner(f"正在拟合基板材料 {base_material} 数据..."):
+        base_fit = fit_material_data(base_df, base_material, "基板")
+    
+    with st.spinner(f"正在拟合样品材料 {sample_material} 数据..."):
+        sample_fit = fit_material_data(sample_df, sample_material, "样品")
+    
+    # 冲击波参数分析部分，为每种材料单独绘图
+    st.subheader("冲击波参数分析（Hugoniot关系）")
+    st.caption("""
+    基于线性Hugoniot关系 Us = C0 + S·Up：
+    - C0：体声速（零压下的声速，单位：km/s）
+    - S：Hugoniot参数（描述冲击波速度随粒子速度的变化，无量纲）
+    - 物理约束：Us > Up，S通常在1.3-2.0之间
+    - 数据点颜色编码：iml(红色)，ssp(蓝色)，计算值(绿色)，手动输入(紫色)，批量导入(橙色)
+    """)
+    
+    # 为每种材料类型显示单独的图像
+    display_material_plots(flyer_df, flyer_material, "飞片")
+    display_material_plots(base_df, base_material, "基板")
+    display_material_plots(sample_df, sample_material, "样品")
+    
+    default_params = {"f": flyer_fit, "b": base_fit, "s": sample_fit}
+    # 参数定义
+    variables = {
+        "f": ["rh0f", "rhf", "Df", "C0f", "Sf", "E0f", "Ef", "uf", "w", "Pf", "gammaf", "Tf"],
+        "b": ["rh0b", "rhb", "Db", "C0b", "Sb", "E0b", "Eb", "ub", "Pb", "gammab", "Tb"],
+        "s": ["rh0s", "rhs", "Ds", "C0s", "Ss", "E0s", "Es", "us", "Ps", "gammas", "Ts"]
+    }
+    
+    input_params = {}
+    sym_vars = {}
+    
+    # 飞片与基板界面速度关系说明 - 更新为正确的物理关系
+    st.info("""
+    飞片冲击关系：飞片速度w与粒子速度uf的关系为w = Df + uf
+    这是从实验室坐标系中的运动学关系和质量守恒方程推导得出的
+    """)
+    
+    # 比热容设置（仅当计算温度时显示）
+    Cv_values = {}
     if calculate_temp:
-        gamma = st.sidebar.slider(
-            "格吕奈森系数 (gamma)",
-            min_value=0.1,
-            max_value=10.0,
-            value=2.0,
-            step=0.1,
-            help="用于冲击温度计算的格吕奈森系数，典型值: 金属1-3，陶瓷2-5"
-        )
-        Cv = st.sidebar.slider(
-            "定容比热容 (Cv, J/kg·K)",
-            min_value=100,
-            max_value=1000,
-            value=385,  # 铜的典型值
-            step=10,
-            help="材料的定容比热容，用于温度计算"
-        )
-        T0 = st.sidebar.slider(
-            "初始温度 (T0, K)",
-            min_value=100,
-            max_value=1000,
-            value=300,
-            step=10,
-            help="材料的初始温度，通常为室温"
-        )
-    else:
-        gamma = 2.0
-        Cv = 385
-        T0 = 300
-    
-    # 功能模块选择
-    if option == "参数计算":
-        st.header("冲击波参数计算")
-        st.markdown("输入已知参数，系统将自动求解未知参数。留空表示未知数，支持单一值、多个值或范围值输入。")
-        
-        # 飞片参数
-        with st.expander("飞片参数", expanded=True):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                rh0f = get_input_streamlit(
-                    "飞片初始密度", "rh0f", "rh0f", 
-                    default=8.96, unit="g/cm³", 
-                    desc="飞片材料的初始密度（未受冲击时）"
-                )
-                Df = get_input_streamlit(
-                    "飞片冲击波速度", "Df", "Df", 
-                    unit="km/s", desc="飞片中冲击波的传播速度"
-                )
-                uf = get_input_streamlit(
-                    "飞片粒子速度", "uf", "uf", 
-                    unit="km/s", desc="飞片材料质点的运动速度"
-                )
-            
-            with col2:
-                Pf = get_input_streamlit(
-                    "飞片冲击压力", "Pf", "Pf", 
-                    unit="GPa", desc="飞片中的冲击压力"
-                )
-                w = get_input_streamlit(
-                    "飞片碰撞速度", "w", "w", 
-                    unit="km/s", desc="飞片与样品的碰撞速度"
-                )
-                C0f = get_input_streamlit(
-                    "飞片体声速", "C0f", "C0f", 
-                    default=3.94, unit="km/s", 
-                    desc="飞片材料的体声速（Hugoniot参数）"
-                )
-                Sf = get_input_streamlit(
-                    "飞片Hugoniot参数S", "Sf", "Sf", 
-                    default=1.48, desc="飞片材料的Hugoniot关系斜率参数"
-                )
-        
-        # 样品参数
-        with st.expander("样品参数", expanded=True):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                rh0s = get_input_streamlit(
-                    "样品初始密度", "rh0s", "rh0s", 
-                    default=2.7, unit="g/cm³", 
-                    desc="样品材料的初始密度（未受冲击时）"
-                )
-                Ds = get_input_streamlit(
-                    "样品冲击波速度", "Ds", "Ds", 
-                    unit="km/s", desc="样品中冲击波的传播速度"
-                )
-                us = get_input_streamlit(
-                    "样品粒子速度", "us", "us", 
-                    unit="km/s", desc="样品材料质点的运动速度"
-                )
-            
-            with col2:
-                Ps = get_input_streamlit(
-                    "样品冲击压力", "Ps", "Ps", 
-                    unit="GPa", desc="样品中的冲击压力"
-                )
-                C0s = get_input_streamlit(
-                    "样品体声速", "C0s", "C0s", 
-                    default=5.8, unit="km/s", 
-                    desc="样品材料的体声速（Hugoniot参数）"
-                )
-                Ss = get_input_streamlit(
-                    "样品Hugoniot参数S", "Ss", "Ss", 
-                    default=1.2, desc="样品材料的Hugoniot关系斜率参数"
-                )
-        
-        # 基板参数
-        with st.expander("基板参数", expanded=True):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                rh0b = get_input_streamlit(
-                    "基板初始密度", "rh0b", "rh0b", 
-                    default=3.5, unit="g/cm³", 
-                    desc="基板材料的初始密度（未受冲击时）"
-                )
-                Db = get_input_streamlit(
-                    "基板冲击波速度", "Db", "Db", 
-                    unit="km/s", desc="基板中冲击波的传播速度"
-                )
-                ub = get_input_streamlit(
-                    "基板粒子速度", "ub", "ub", 
-                    unit="km/s", desc="基板材料质点的运动速度"
-                )
-            
-            with col2:
-                Pb = get_input_streamlit(
-                    "基板冲击压力", "Pb", "Pb", 
-                    unit="GPa", desc="基板中的冲击压力"
-                )
-                C0b = get_input_streamlit(
-                    "基板体声速", "C0b", "C0b", 
-                    default=4.2, unit="km/s", 
-                    desc="基板材料的体声速（Hugoniot参数）"
-                )
-                Sb = get_input_streamlit(
-                    "基板Hugoniot参数S", "Sb", "Sb", 
-                    default=1.3, desc="基板材料的Hugoniot关系斜率参数"
-                )
-        
-        # 求解按钮
-        st.subheader("求解设置")
-        col1, col2 = st.columns(2)
-        with col1:
-            solve_method = st.radio(
-                "求解方法",
-                ["符号求解 (适用于简单情况)", "数值求解 (适用于复杂情况)"],
-                index=1,
-                help="符号求解适用于未知数较少的情况，数值求解适用于多未知数复杂系统"
-            )
-        with col2:
-            max_iter = st.slider(
-                "最大迭代次数 (数值求解)",
-                min_value=100,
-                max_value=10000,
-                value=1000,
-                step=100,
-                help="数值求解的最大迭代次数，复杂系统需要更大值"
-            )
-        
-        if st.button("开始求解", use_container_width=True):
-            try:
-                # 收集已知参数和符号变量
-                sym_vars = {}
-                known_params = {}
-                
-                # 飞片参数处理
-                for var_name, var_value in [
-                    ('rh0f', rh0f), ('Df', Df), ('uf', uf),
-                    ('Pf', Pf), ('w', w), ('C0f', C0f), ('Sf', Sf)
-                ]:
-                    if isinstance(var_value, list) and len(var_value) == 1:
-                        known_params[var_name] = var_value[0]
-                    elif not isinstance(var_value, list):  # 是符号变量
-                        sym_vars[var_name] = var_value
-                
-                # 样品参数处理
-                for var_name, var_value in [
-                    ('rh0s', rh0s), ('Ds', Ds), ('us', us),
-                    ('Ps', Ps), ('C0s', C0s), ('Ss', Ss)
-                ]:
-                    if isinstance(var_value, list) and len(var_value) == 1:
-                        known_params[var_name] = var_value[0]
-                    elif not isinstance(var_value, list):  # 是符号变量
-                        sym_vars[var_name] = var_value
-                
-                # 基板参数处理
-                for var_name, var_value in [
-                    ('rh0b', rh0b), ('Db', Db), ('ub', ub),
-                    ('Pb', Pb), ('C0b', C0b), ('Sb', Sb)
-                ]:
-                    if isinstance(var_value, list) and len(var_value) == 1:
-                        known_params[var_name] = var_value[0]
-                    elif not isinstance(var_value, list):  # 是符号变量
-                        sym_vars[var_name] = var_value
-                
-                # 检查是否有未知数
-                if not sym_vars:
-                    st.success("所有参数均为已知，无需求解")
-                    st.json(known_params)
-                    return
-                
-                st.info(f"检测到 {len(sym_vars)} 个未知数，使用 {solve_method} 方法求解...")
-                logger.info(f"开始求解，已知参数: {known_params}, 未知数: {sym_vars.keys()}")
-                
-                # 定义冲击波方程组（核心物理关系）
-                equations = [
-                    # 飞片方程
-                    Eq(sym_vars.get('uf', 0) + sym_vars.get('Df', 0), known_params.get('w', sym_vars.get('w', 0))),  # uf + Df = w
-                    Eq(sym_vars.get('Df', 0), sym_vars.get('C0f', 0) + sym_vars.get('Sf', 0) * sym_vars.get('uf', 0)),  # Df = C0f + Sf·uf
-                    Eq(sym_vars.get('Pf', 0), sym_vars.get('rh0f', 0) * sym_vars.get('Df', 0) * sym_vars.get('uf', 0)),  # Pf = rh0f·Df·uf
-                    
-                    # 样品方程
-                    Eq(sym_vars.get('Ds', 0), sym_vars.get('C0s', 0) + sym_vars.get('Ss', 0) * sym_vars.get('us', 0)),  # Ds = C0s + Ss·us
-                    Eq(sym_vars.get('Ps', 0), sym_vars.get('rh0s', 0) * sym_vars.get('Ds', 0) * sym_vars.get('us', 0)),  # Ps = rh0s·Ds·us
-                    
-                    # 基板方程
-                    Eq(sym_vars.get('Db', 0), sym_vars.get('C0b', 0) + sym_vars.get('Sb', 0) * sym_vars.get('ub', 0)),  # Db = C0b + Sb·ub
-                    Eq(sym_vars.get('Pb', 0), sym_vars.get('rh0b', 0) * sym_vars.get('Db', 0) * sym_vars.get('ub', 0)),  # Pb = rh0b·Db·ub
-                    
-                    # 压力连续性
-                    Eq(sym_vars.get('Pf', 0), sym_vars.get('Ps', 0)),  # Pf = Ps
-                    Eq(sym_vars.get('Ps', 0), sym_vars.get('Pb', 0))   # Ps = Pb
-                ]
-                
-                # 过滤掉不涉及符号变量的方程
-                valid_equations = []
-                for eq in equations:
-                    if any(var in eq.free_symbols for var in sym_vars.values()):
-                        valid_equations.append(eq)
-                
-                solution = None
-                if solve_method == "符号求解 (适用于简单情况)":
-                    # 符号求解（适用于未知数较少的情况）
-                    try:
-                        solution = solve(valid_equations, list(sym_vars.values()), dict=True)
-                        st.info(f"符号求解返回 {len(solution)} 个可能解")
-                    except Exception as e:
-                        st.warning(f"符号求解失败: {str(e)}，将尝试数值求解")
-                        solve_method = "数值求解 (适用于复杂情况)"
-                
-                if solve_method == "数值求解 (适用于复杂情况)" or solution is None or not solution:
-                    # 生成更合理的初始猜测值
-                    initial_guess = generate_better_initial_guess(known_params, sym_vars.values())
-                    st.info(f"使用优化的初始猜测值: {initial_guess}")
-                    
-                    # 数值求解
-                    solution = solve_numerically(valid_equations, sym_vars, initial_guess)
-                    if solution:
-                        solution = [solution]  # 包装成列表格式，统一处理
-                    else:
-                        st.error("数值求解失败，可能是因为: 1) 物理约束矛盾 2) 初始猜测值不合理 3) 方程组无解")
-                        st.info("建议: 检查输入参数是否符合物理规律，或减少未知数数量")
-                        return
-                
-                # 处理求解结果
-                if solution and len(solution) > 0:
-                    st.success(f"求解成功，获得 {len(solution)} 个有效解（已过滤不符合物理规律的解）")
-                    
-                    # 显示结果
-                    for i, sol in enumerate(solution, 1):
-                        with st.expander(f"解 {i}", expanded=i == 1):
-                            # 合并已知参数和求解结果
-                            full_result = known_params.copy()
-                            full_result.update(sol)
-                            
-                            # 计算派生参数（压缩密度、比体积等）
-                            tolerance = 1e-3
-                            if 'rh0f' in full_result and 'Df' in full_result and 'uf' in full_result:
-                                if abs(full_result['Df'] - full_result['uf']) > tolerance:
-                                    full_result['rhf'] = (full_result['rh0f'] * full_result['Df']) / (full_result['Df'] - full_result['uf'])
-                            
-                            if 'rh0s' in full_result and 'Ds' in full_result and 'us' in full_result:
-                                if abs(full_result['Ds'] - full_result['us']) > tolerance:
-                                    full_result['rhs'] = (full_result['rh0s'] * full_result['Ds']) / (full_result['Ds'] - full_result['us'])
-                            
-                            if 'rh0b' in full_result and 'Db' in full_result and 'ub' in full_result:
-                                if abs(full_result['Db'] - full_result['ub']) > tolerance:
-                                    full_result['rhb'] = (full_result['rh0b'] * full_result['Db']) / (full_result['Db'] - full_result['ub'])
-                            
-                            # 计算比体积比 V/V0
-                            if 'Df' in full_result and 'uf' in full_result:
-                                if full_result['Df'] > tolerance:
-                                    full_result['V_V0_f'] = 1 - full_result['uf'] / full_result['Df']
-                            
-                            if 'Ds' in full_result and 'us' in full_result:
-                                if full_result['Ds'] > tolerance:
-                                    full_result['V_V0_s'] = 1 - full_result['us'] / full_result['Ds']
-                            
-                            if 'Db' in full_result and 'ub' in full_result:
-                                if full_result['Db'] > tolerance:
-                                    full_result['V_V0_b'] = 1 - full_result['ub'] / full_result['Db']
-                            
-                            # 计算温度
-                            if calculate_temp:
-                                for mat in ['f', 's', 'b']:  # 飞片、样品、基板
-                                    if f'rho0{mat}' in full_result and f'D{mat}' in full_result and f'u{mat}' in full_result:
-                                        try:
-                                            U_s = full_result[f'D{mat}']
-                                            u_p = full_result[f'u{mat}']
-                                            rho0 = full_result[f'rho0{mat}']
-                                            _, V, _, _, T = calculate_shock_parameters(
-                                                U_s, u_p, rho0, gamma, Cv, T0, calculate_temp=True
-                                            )
-                                            full_result[f'T{mat}'] = T
-                                        except Exception as e:
-                                            st.warning(f"计算{mat}的温度失败: {str(e)}")
-                            
-                            # 显示结果表格
-                            result_df = pd.DataFrame(
-                                list(full_result.items()),
-                                columns=['参数', '值']
-                            )
-                            # 添加单位
-                            units = {
-                                'rh0f': 'g/cm³', 'Df': 'km/s', 'uf': 'km/s', 'Pf': 'GPa', 'w': 'km/s', 
-                                'C0f': 'km/s', 'Sf': '', 'rhf': 'g/cm³', 'V_V0_f': '', 'Tf': 'K',
-                                'rh0s': 'g/cm³', 'Ds': 'km/s', 'us': 'km/s', 'Ps': 'GPa',
-                                'C0s': 'km/s', 'Ss': '', 'rhs': 'g/cm³', 'V_V0_s': '', 'Ts': 'K',
-                                'rh0b': 'g/cm³', 'Db': 'km/s', 'ub': 'km/s', 'Pb': 'GPa',
-                                'C0b': 'km/s', 'Sb': '', 'rhb': 'g/cm³', 'V_V0_b': '', 'Tb': 'K'
-                            }
-                            result_df['单位'] = result_df['参数'].map(units).fillna('')
-                            # 格式化数值
-                            result_df['值'] = result_df['值'].apply(
-                                lambda x: f"{x:.6f}" if isinstance(x, float) else str(x)
-                            )
-                            st.dataframe(result_df, hide_index=True)
-                    
-                    # 保存结果到数据库的选项
-                    if st.button("保存结果到数据库", use_container_width=True):
-                        saved_count = save_results_to_db(solution, selected_material)
-                        if saved_count > 0:
-                            st.success(f"成功保存 {saved_count} 条结果到 {selected_material} 数据集")
-            
-            except Exception as e:
-                st.error(f"求解过程出错: {str(e)}")
-                logger.error(f"求解错误: {str(e)}\n{traceback.format_exc()}")
-    
-    elif option == "数据拟合与分析":
-        st.header("冲击波数据拟合与分析")
-        st.markdown("对已有实验数据进行拟合，分析材料的Hugoniot关系，并可视化冲击波参数间的关系。")
-        
-        # 获取并显示材料数据
-        df = get_material_data(selected_material)
-        if df.empty:
-            st.warning(f"材料 '{selected_material}' 暂无数据，请先在数据库中添加数据")
-            return
-        
-        st.info(f"已加载材料 '{selected_material}' 的 {len(df)} 条有效数据（已过滤不符合物理规律的记录）")
-        
-        # 显示数据预览
-        with st.expander("数据预览", expanded=False):
-            st.dataframe(df)
-        
-        # 数据拟合
-        st.subheader("Hugoniot关系拟合 (Us = C0 + S·Up)")
-        fit_result = fit_material_data(df, selected_material, "飞片")
-        if not fit_result:
-            st.warning("无法进行拟合，请检查数据")
-            return
-        
-        C0, S = fit_result["C0"], fit_result["S"]
-        
-        # 生成并显示冲击波关系图
-        st.subheader("冲击波参数关系图")
-        plot_buf = generate_shock_plots(df, C0, S, selected_material, "飞片")
-        st.image(plot_buf, caption=f"{selected_material} 的冲击波参数关系图")
-        
-        # 误差分析
-        st.subheader("拟合误差分析")
+        st.subheader("比热容设置（用于温度计算）")
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("决定系数 R²", f"{fit_result['r2']:.4f}", 
-                     help="越接近1表示拟合效果越好")
+            Cv_values['f'] = st.number_input(f"飞片比热容 Cv (J/(kg·K)) ({flyer_material})", 
+                                            value=385.0, min_value=1.0, help="铜约为385，铝约为900")
         with col2:
-            st.metric("均方根误差 (RMSE)", f"{fit_result['rmse']:.4f} km/s",
-                     help="预测值与实际值的平均偏差")
+            Cv_values['b'] = st.number_input(f"基板比热容 Cv (J/(kg·K)) ({base_material})", 
+                                            value=385.0, min_value=1.0)
         with col3:
-            st.metric("平均绝对误差 (MAE)", f"{fit_result['mae']:.4f} km/s",
-                     help="预测值与实际值的平均绝对偏差")
-        
-        # 实验方法比较
-        if 'exp_method' in df.columns and len(df['exp_method'].unique()) > 1:
-            st.subheader("不同实验方法的参数对比")
-            method_df = df.groupby('exp_method').agg({
-                'Us': ['mean', 'std', 'count'],
-                'Up': ['mean', 'std'],
-                'P': ['mean', 'std'],
-                'rho0': ['mean']
-            })
-            method_df.columns = ['_'.join(col).strip() for col in method_df.columns.values]
-            st.dataframe(method_df)
-            
-            # 按实验方法分别拟合
-            st.subheader("不同实验方法的Hugoniot拟合")
-            for method in df['exp_method'].unique():
-                method_data = df[df['exp_method'] == method]
-                if len(method_data) >= 2:
-                    st.write(f"实验方法: {method} (样本数: {len(method_data)})")
-                    method_fit = fit_material_data(method_data, selected_material, f"飞片 ({method})")
-                else:
-                    st.write(f"实验方法: {method} (样本数不足，无法拟合)")
+            Cv_values['s'] = st.number_input(f"样品比热容 Cv (J/(kg·K)) ({sample_material})", 
+                                            value=385.0, min_value=1.0)
     
-    elif option == "数据库管理":
-        st.header("数据库管理")
-        st.markdown("管理冲击波实验数据，支持数据导入、导出、查看和删除等操作。")
+    # 飞片参数
+    with st.expander(f"{flyer_material} 飞片参数", expanded=True):
+        cols = st.columns(3)
+        var_descs = {
+            "rh0f": "初始密度（必须输入）",
+            "rhf": "压缩密度",
+            "Df": "冲击波速度（对应Us）",
+            "C0f": "体声速（Hugoniot拟合）",
+            "Sf": "Hugoniot参数S（无量纲）",
+            "E0f": "初始内能密度",
+            "Ef": "压缩后内能密度",
+            "uf": "粒子速度（对应Up）",
+            "w": "飞片初始冲击速度",
+            "Pf": "冲击压力",
+            "gammaf": "格吕奈森系数",
+            "Tf": "冲击温度 (K)"
+        }
+        var_units = {
+            "rh0f": "g/cm³",
+            "rhf": "g/cm³",
+            "Df": "km/s",
+            "C0f": "km/s",
+            "Sf": "无量纲",
+            "E0f": "GPa·cm³/g",
+            "Ef": "GPa·cm³/g",
+            "uf": "km/s",
+            "w": "km/s",
+            "Pf": "GPa",
+            "gammaf": "无量纲",
+            "Tf": "K"
+        }
+        for i, var in enumerate(variables["f"]):
+            # 温度参数仅在计算温度时显示
+            if var.startswith('T') and not calculate_temp:
+                continue
+                
+            with cols[i % 3]:
+                default_val = None
+                if default_params["f"] and var in ["rh0f", "C0f", "Sf"]:
+                    if var == "rh0f":
+                        default_val = default_params["f"]["rho0"]
+                    elif var == "C0f":
+                        default_val = default_params["f"]["C0"]
+                    elif var == "Sf":
+                        default_val = default_params["f"]["S"]
+                elif var == "gammaf":
+                    # 尝试从数据中获取平均格吕奈森系数
+                    if not flyer_df.empty and 'gamma' in flyer_df.columns:
+                        gamma_vals = flyer_df['gamma'].dropna()
+                        if len(gamma_vals) > 0:
+                            default_val = gamma_vals.mean()
+                        else:
+                            default_val = 2.0
+                    else:
+                        default_val = 2.0  # 默认格吕奈森系数
+                # 为初始密度设置默认值和更强的提示
+                if var == "rh0f" and default_val is None:
+                    default_val = 8.96  # 铜的默认密度
+                
+                val = get_input_streamlit(
+                    label=var,
+                    var_name=var,
+                    key=f"f_{var}",
+                    default=default_val,
+                    unit=var_units[var],
+                    desc=var_descs[var],
+                    # 初始密度不允许留空，强制要求输入
+                    disabled=False
+                )
+                input_params[var] = val
+                sym_vars[var] = symbols(var)
+    
+    # 基板参数 - 所有参数都需要独立输入
+    with st.expander(f"{base_material} 基板参数", expanded=True):
+        cols = st.columns(3)
+        for i, var in enumerate(variables["b"]):
+            # 温度参数仅在计算温度时显示
+            if var.startswith('T') and not calculate_temp:
+                continue
+                
+            with cols[i % 3]:
+                default_val = None
+                if default_params["b"] and var in ["rh0b", "C0b", "Sb"]:
+                    if var == "rh0b":
+                        default_val = default_params["b"]["rho0"]
+                    elif var == "C0b":
+                        default_val = default_params["b"]["C0"]
+                    elif var == "Sb":
+                        default_val = default_params["b"]["S"]
+                elif var == "gammab":
+                    # 尝试从数据中获取平均格吕奈森系数
+                    if not base_df.empty and 'gamma' in base_df.columns:
+                        gamma_vals = base_df['gamma'].dropna()
+                        if len(gamma_vals) > 0:
+                            default_val = gamma_vals.mean()
+                        else:
+                            default_val = 2.0
+                    else:
+                        default_val = 2.0  # 默认格吕奈森系数
+                
+                val = get_input_streamlit(
+                    label=var,
+                    var_name=var,
+                    key=f"b_{var}",
+                    default=default_val,
+                    unit="g/cm³" if var.startswith("rh") else 
+                         "km/s" if var in ["Db", "C0b", "ub"] else 
+                         "GPa·cm³/g" if var in ["E0b", "Eb"] else
+                         "GPa" if var == "Pb" else 
+                         "K" if var == "Tb" else "无量纲",
+                    desc="基板初始密度（必须输入）" if var == "rh0b" else
+                         "基板压缩密度" if var == "rhb" else
+                         "基板冲击波速度" if var == "Db" else
+                         "基板体声速" if var == "C0b" else
+                         "基板Hugoniot参数" if var == "Sb" else
+                         "基板初始内能密度" if var == "E0b" else
+                         "基板压缩后内能密度" if var == "Eb" else
+                         "基板粒子速度" if var == "ub" else
+                         "基板冲击压力" if var == "Pb" else
+                         "基板格吕奈森系数" if var == "gammab" else
+                         "基板冲击温度"
+                )
+                input_params[var] = val
+                sym_vars[var] = symbols(var)
+    
+    # 样品参数 - 所有参数都需要独立输入
+    with st.expander(f"{sample_material} 样品参数", expanded=True):
+        cols = st.columns(3)
+        for i, var in enumerate(variables["s"]):
+            # 温度参数仅在计算温度时显示
+            if var.startswith('T') and not calculate_temp:
+                continue
+                
+            with cols[i % 3]:
+                default_val = None
+                if default_params["s"] and var in ["rh0s", "C0s", "Ss"]:
+                    if var == "rh0s":
+                        default_val = default_params["s"]["rho0"]
+                    elif var == "C0s":
+                        default_val = default_params["s"]["C0"]
+                    elif var == "Ss":
+                        default_val = default_params["s"]["S"]
+                elif var == "gammas":
+                    # 尝试从数据中获取平均格吕奈森系数
+                    if not sample_df.empty and 'gamma' in sample_df.columns:
+                        gamma_vals = sample_df['gamma'].dropna()
+                        if len(gamma_vals) > 0:
+                            default_val = gamma_vals.mean()
+                        else:
+                            default_val = 2.0
+                    else:
+                        default_val = 2.0  # 默认格吕奈森系数
+                
+                val = get_input_streamlit(
+                    label=var,
+                    var_name=var,
+                    key=f"s_{var}",
+                    default=default_val,
+                    unit="g/cm³" if var.startswith("rh") else 
+                         "km/s" if var in ["Ds", "C0s", "us"] else 
+                         "GPa·cm³/g" if var in ["E0s", "Es"] else
+                         "GPa" if var == "Ps" else
+                         "K" if var == "Ts" else "无量纲",
+                    desc="样品初始密度（必须输入）" if var == "rh0s" else
+                         "样品压缩密度" if var == "rhs" else
+                         "样品冲击波速度" if var == "Ds" else
+                         "样品体声速" if var == "C0s" else
+                         "样品Hugoniot参数S" if var == "Ss" else
+                         "样品初始内能密度" if var == "E0s" else
+                         "样品压缩后内能密度" if var == "Es" else
+                         "样品粒子速度" if var == "us" else
+                         "样品冲击压力" if var == "Ps" else
+                         "样品格吕奈森系数" if var == "gammas" else
+                         "样品冲击温度"
+                )
+                input_params[var] = val
+                sym_vars[var] = symbols(var)
+    
+    # 固定显示保存当前参数按钮
+    col_save, col_other = st.columns([1, 3])
+    with col_save:
+        if st.button("保存当前参数到数据库"):
+            count = save_input_parameters(input_params, sample_material, "database_mode_input")
+            if count > 0:
+                st.success(f"已保存到 {sample_material} 数据集，共 {count} 条记录")
+    
+    # 参数组合限制
+    range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
+    total_combinations = 1
+    for v in range_params.values():
+        total_combinations *= len(v)
+    
+    max_combinations = st.slider(
+        "最大参数组合数（过多会影响速度）", 
+        min_value=10, 
+        max_value=1000, 
+        value=min(100, total_combinations)
+    )
+    
+    if st.button("开始求解"):
+        valid = True
+        # 检查关键参数是否已输入 - 使用Symbol类进行类型检查
+        for var in ['rh0f', 'rh0b', 'rh0s']:
+            if isinstance(input_params.get(var), Symbol):
+                valid = False
+                st.error(f"{var}（初始密度）是必填参数，请输入值")
+        
+        # 检查其他参数输入有效性
+        for var, val in input_params.items():
+            if val is None:
+                valid = False
+                st.error(f"{var} 输入无效，请检查")
+        
+        if not valid:
+            return
+            
+        combinations = itertools.product(*[[(k, val) for val in v] for k, v in range_params.items()])
+        
+        # 截断过多的组合
+        combinations = list(combinations)
+        if len(combinations) > max_combinations:
+            st.warning(f"参数组合过多（{len(combinations)}），为提高速度已截断至 {max_combinations} 个")
+            combinations = combinations[:max_combinations]
+        
+        results = []
+        progress_bar = st.progress(0)
+        total = len(combinations)
+        count = 0
+        invalid_solutions = 0
+        
+        for combo in combinations:
+            count += 1
+            # 每10次更新一次进度条以减少UI开销
+            if count % 10 == 0 or count == total:
+                progress_bar.progress(count / total)
+                
+            current_subs = {sym_vars[k]: v for k, v in combo}
+            
+            # 方程组 - 使用修正后的飞片速度方程
+            eqs = [
+                # 飞片质量守恒: rho0f·Df = rhf·(Df - uf)
+                Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
+                # 修正：飞片速度与粒子速度关系 (实验室坐标系): w = Df + uf
+                Eq(sym_vars['w'] - (sym_vars['Df'] + sym_vars['uf']), 0),
+                # 基板质量守恒: rho0b·Db = rhb·(Db - ub)
+                Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
+                # 飞片动量守恒: Pf = rho0f·Df·uf  (修正：使用标准动量守恒公式)
+                Eq(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*sym_vars['uf'], 0),
+                # 基板动量守恒: Pb = rho0b·Db·ub  (修正：使用标准动量守恒公式)
+                Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*sym_vars['ub'], 0),
+                # 飞片能量守恒: Ef = E0f + 0.5·Pf·(1/rho0f - 1/rhf)
+                Eq(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
+                # 基板能量守恒: Eb = E0b + 0.5·Pb·(1/rho0b - 1/rhb)
+                Eq(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
+                # 飞片Hugoniot关系: Df = C0f + Sf·uf  (修正：使用标准Hugoniot关系)
+                Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*sym_vars['uf'], 0),
+                # 基板Hugoniot关系: Db = C0b + Sb·ub  (修正：使用标准Hugoniot关系)
+                Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*sym_vars['ub'], 0),
+                # 界面压力连续性: Pf = Pb
+                Eq(sym_vars['Pf'] - sym_vars['Pb'], 0),
+                # 界面粒子速度连续性: uf = ub
+                Eq(sym_vars['uf'] - sym_vars['ub'], 0)
+            ]
+            
+            # 温度相关方程（仅当计算温度时添加）
+            if calculate_temp:
+                # 飞片温度方程 (Mie-Grüneisen)
+                eqs.append(Eq(sym_vars['Tf'] - 300 - (sym_vars['Ef'] - sym_vars['E0f'])*1e6 / 
+                             (Cv_values['f'] * (1 + sym_vars['gammaf']/2)), 0))
+                # 基板温度方程
+                eqs.append(Eq(sym_vars['Tb'] - 300 - (sym_vars['Eb'] - sym_vars['E0b'])*1e6 / 
+                             (Cv_values['b'] * (1 + sym_vars['gammab']/2)), 0))
+            
+            try:
+                # 检查样品和基板是否为同一材料
+                cond = all([
+                    current_subs.get(sym_vars['rh0s'], sym_vars['rh0s']) == current_subs.get(sym_vars['rh0b'], sym_vars['rh0b']),
+                    current_subs.get(sym_vars['C0b'], sym_vars['C0b']) == current_subs.get(sym_vars['C0s'], sym_vars['C0s']),
+                    current_subs.get(sym_vars['Sb'], sym_vars['Sb']) == current_subs.get(sym_vars['Ss'], sym_vars['Ss']),
+                    current_subs.get(sym_vars['E0b'], sym_vars['E0b']) == current_subs.get(sym_vars['E0s'], sym_vars['E0s'])
+                ])
+            except TypeError:
+                cond = False
+                
+            if cond:
+                # 样品与基板为同一材料：参数与基板一致
+                eqs += [
+                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),  # 压力连续性
+                    Eq(sym_vars['ub'] - sym_vars['us'], 0),  # 速度连续性
+                    Eq(sym_vars['rhb'] - sym_vars['rhs'], 0), # 密度连续性
+                    Eq(sym_vars['Db'] - sym_vars['Ds'], 0),  # 冲击波速度连续性
+                    # 样品能量守恒
+                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0)
+                ]
+                
+                # 温度相关方程（仅当计算温度时添加）
+                if calculate_temp:
+                    eqs += [
+                        Eq(sym_vars['Tb'] - sym_vars['Ts'], 0),
+                        Eq(sym_vars['gammab'] - sym_vars['gammas'], 0)
+                    ]
+            else:
+                # 样品与基板为不同材料：单独计算
+                eqs += [
+                    # 样品质量守恒
+                    Eq(sym_vars['rh0s']*sym_vars['Ds'] - sym_vars['rhb']*(sym_vars['Ds'] - sym_vars['us']), 0),
+                    # 基板-样品界面动量守恒
+                    Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*(2*sym_vars['ub'] - sym_vars['us']), 0),
+                    # 样品动量守恒
+                    Eq(sym_vars['Ps'] - sym_vars['rh0s']*sym_vars['Ds']*sym_vars['us'], 0),
+                    # 样品能量守恒
+                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0),
+                    # 样品Hugoniot关系
+                    Eq(sym_vars['Ds'] - sym_vars['C0s'] - sym_vars['Ss']*sym_vars['us'], 0),
+                    # 基板-样品界面Hugoniot关系
+                    Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*(2*sym_vars['ub'] - sym_vars['us']), 0),
+                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),  # 压力连续性
+                    Eq(sym_vars['ub'] - sym_vars['us'], 0)   # 速度连续性
+                ]
+                
+                # 温度相关方程（仅当计算温度时添加）
+                if calculate_temp:
+                    eqs.append(Eq(sym_vars['Ts'] - 300 - (sym_vars['Es'] - sym_vars['E0s'])*1e6 / 
+                                 (Cv_values['s'] * (1 + sym_vars['gammas']/2)), 0))
+            
+            substituted_eqs = [eq.subs(current_subs) for eq in eqs]
+            remaining_vars = list(set().union(*[eq.free_symbols for eq in substituted_eqs]))
+            
+            if not remaining_vars:
+                continue
+                
+            try:
+                # 构建初始猜测值（基于物理合理范围和已知参数）
+                initial_guess = {}
+                # 提取已知参数值用于更智能的初始猜测
+                known_params = {}
+                for k, v in current_subs.items():
+                    try:
+                        known_params[str(k)] = float(v)
+                    except:
+                        pass
+                
+                for var in remaining_vars:
+                    var_str = str(var)
+                    # 基于已知参数动态设置初始猜测值
+                    if var_str == 'w' and 'Df' in known_params and 'uf' in known_params:
+                        initial_guess[var] = known_params['Df'] + known_params['uf']
+                    elif var_str == 'Df' and 'w' in known_params and 'uf' in known_params:
+                        initial_guess[var] = known_params['w'] - known_params['uf']
+                    elif var_str == 'uf' and 'w' in known_params and 'Df' in known_params:
+                        initial_guess[var] = known_params['w'] - known_params['Df']
+                    elif var_str == 'Pf' and 'rh0f' in known_params and 'Df' in known_params and 'uf' in known_params:
+                        initial_guess[var] = known_params['rh0f'] * known_params['Df'] * known_params['uf']
+                    elif var_str.startswith(('rh0', 'rh')):  # 密度
+                        initial_guess[var] = known_params.get('rh0f', 8.0)  # 使用已知密度作为参考
+                    elif var_str.startswith(('D', 'C0', 'u')):  # 速度
+                        if 'w' in known_params:
+                            initial_guess[var] = known_params['w'] / 2  # 基于飞片速度估算
+                        else:
+                            initial_guess[var] = 5.0
+                    elif var_str == 'w':  # 飞片速度
+                        initial_guess[var] = 10.0
+                    elif var_str.startswith('P'):  # 压力
+                        if 'rh0f' in known_params and 'w' in known_params:
+                            # 基于飞片速度估算压力
+                            initial_guess[var] = known_params['rh0f'] * (known_params['w']/2) * (known_params['w']/2)
+                        else:
+                            initial_guess[var] = 100.0
+                    elif var_str.startswith('gamma'):  # 格吕奈森系数
+                        initial_guess[var] = 2.0
+                    elif var_str.startswith('T'):  # 温度
+                        initial_guess[var] = 3000.0
+                    else:  # 其他参数
+                        initial_guess[var] = 1.0
+                
+                # 使用数值方法求解
+                solution = solve_numerically(substituted_eqs, {v:v for v in remaining_vars}, initial_guess)
+                
+                if solution:
+                    record = solution.copy()
+                    # 添加已知参数
+                    for k, v in current_subs.items():
+                        try:
+                            record[str(k)] = float(v)
+                        except:
+                            pass
+                    record['flyer_material'] = flyer_material
+                    record['base_material'] = base_material
+                    record['sample_material'] = sample_material
+                    results.append(record)
+                else:
+                    invalid_solutions += 1
+            except Exception as e:
+                st.warning(f"求解错误: {str(e)}（可能由高压下的非线性效应引起，请检查参数范围）")
+                invalid_solutions += 1
+        
+        if results:
+            st.success(f"求解完成，找到 {len(results)} 个符合物理规律的解（已过滤 {invalid_solutions} 个不合理解）")
+            
+            st.subheader("结果数据（单位：rho=g/cm³, D=km/s, u=km/s, P=GPa, T=K）")
+            df = pd.DataFrame(results)
+            st.dataframe(df)
+            
+            csv = df.to_csv(index=False)
+            st.download_button(
+                label="下载结果数据",
+                data=csv,
+                file_name="solver_results.csv",
+                mime="text/csv",
+            )
+            
+            st.subheader("结果可视化")
+            fig = plot_results_streamlit(results, calculate_temp)
+            if fig:
+                st.pyplot(fig)
+                buf2 = BytesIO()
+                fig.savefig(buf2, format='png', dpi=150, bbox_inches='tight')
+                buf2.seek(0)
+                st.download_button(
+                    label="下载图表",
+                    data=buf2,
+                    file_name="analysis_with_temp_error.png" if calculate_temp else "analysis_results.png",
+                    mime="image/png"
+                )
+            
+            if st.button("保存结果到数据库"):
+                count = save_results_to_db(results, sample_material)
+                if count > 0:
+                    st.success(f"已保存到 {sample_material} 数据集，共 {count} 条记录")
+        else:
+            st.warning(f"未找到有效解，尝试了 {total} 组参数，均不符合物理规律或求解失败")
+    
+    if st.button("返回主页"):
+        st.session_state.page = "home"
+        st.rerun()  # 立即刷新页面
+
+def manual_mode_page():
+    # 记录当前页面，用于返回功能
+    st.session_state.previous_page = "manual_mode"
+    st.title("手动输入模式")
+    st.write("通过手动输入参数进行求解，适用于没有数据库数据的场景")
+    st.success("提示：将参数留空将由系统根据物理规律自动求解")
+    
+    # 添加温度计算选项
+    calculate_temp = st.checkbox("进行温度相关计算", value=True, 
+                                 help="勾选以计算冲击温度，需要格吕奈森系数和比热容参数")
+    
+    # 查看数据库快捷入口
+    if st.button("查看数据库"):
+        st.session_state.page = "view_database"
+        st.rerun()
+    
+    # 材料参数输入 - 已统一为中文
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        flyer_material = st.text_input("飞片材料名称", value="铜", help="输入材料名称，例如：铜、铝")
+    with col2:
+        base_material = st.text_input("基板材料名称", value="铝", help="输入材料名称，例如：铜、铝")
+    with col3:
+        sample_material = st.text_input("样品材料名称", value="铜", help="输入材料名称，例如：铜、铝")
+    
+    # 飞片与基板界面速度关系说明 - 更新为正确的物理关系
+    st.info("""
+    飞片冲击关系：飞片速度w与粒子速度uf的关系为w = Df + uf
+    这是从实验室坐标系中的运动学关系和质量守恒方程推导得出的
+    """)
+    
+    # 比热容设置（仅当计算温度时显示）
+    Cv_values = {}
+    if calculate_temp:
+        st.subheader("比热容设置（用于温度计算）")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            Cv_values['f'] = st.number_input(f"飞片比热容 Cv (J/(kg·K)) ({flyer_material})", 
+                                            value=385.0, min_value=1.0, help="铜约为385，铝约为900")
+        with col2:
+            Cv_values['b'] = st.number_input(f"基板比热容 Cv (J/(kg·K)) ({base_material})", 
+                                            value=385.0, min_value=1.0)
+        with col3:
+            Cv_values['s'] = st.number_input(f"样品比热容 Cv (J/(kg·K)) ({sample_material})", 
+                                            value=385.0, min_value=1.0)
+    
+    exp_method = st.text_input("实验方法/数据来源", value="manual_input", help="记录数据来源，例如：iml、ssp、实验设备、文献等")
+    
+    # 参数输入
+    variables = {
+        "f": ["rh0f", "rhf", "Df", "C0f", "Sf", "E0f", "Ef", "uf", "w", "Pf", "gammaf", "Tf"],
+        "b": ["rh0b", "rhb", "Db", "C0b", "Sb", "E0b", "Eb", "ub", "Pb", "gammab", "Tb"],
+        "s": ["rh0s", "rhs", "Ds", "C0s", "Ss", "E0s", "Es", "us", "Ps", "gammas", "Ts"]
+    }
+    
+    input_params = {}
+    sym_vars = {}
+    
+    # 飞片参数
+    with st.expander(f"{flyer_material} 飞片参数", expanded=True):
+        cols = st.columns(3)
+        for i, var in enumerate(variables["f"]):
+            # 温度参数仅在计算温度时显示
+            if var.startswith('T') and not calculate_temp:
+                continue
+                
+            with cols[i % 3]:
+                default_val = 2.0 if var == "gammaf" else None
+                # 为初始密度设置默认值
+                if var == "rh0f":
+                    default_val = 8.96  # 铜的默认密度
+                
+                val = get_input_streamlit(
+                    label=var,
+                    var_name=var,
+                    key=var,
+                    default=default_val,
+                    unit="g/cm³" if var.startswith("rh") else 
+                         "km/s" if var in ["Df", "C0f", "uf", "w"] else 
+                         "GPa·cm³/g" if var in ["E0f", "Ef"] else
+                         "GPa" if var == "Pf" else 
+                         "K" if var == "Tf" else "无量纲",
+                    desc="飞片初始密度（必须输入）" if var == "rh0f" else
+                         "飞片压缩密度" if var == "rhf" else
+                         "飞片冲击波速度（对应Us）" if var == "Df" else
+                         "飞片体声速（Hugoniot拟合）" if var == "C0f" else
+                         "飞片Hugoniot参数S（无量纲）" if var == "Sf" else
+                         "飞片初始内能密度" if var == "E0f" else
+                         "飞片压缩后内能密度" if var == "Ef" else
+                         "飞片粒子速度（对应Up）" if var == "uf" else
+                         "飞片初始冲击速度" if var == "w" else
+                         "飞片冲击压力" if var == "Pf" else
+                         "飞片格吕奈森系数" if var == "gammaf" else
+                         "飞片冲击温度"
+                )
+                input_params[var] = val
+                sym_vars[var] = symbols(var)
+    
+    # 基板参数
+    with st.expander(f"{base_material} 基板参数", expanded=True):
+        cols = st.columns(3)
+        for i, var in enumerate(variables["b"]):
+            # 温度参数仅在计算温度时显示
+            if var.startswith('T') and not calculate_temp:
+                continue
+                
+            with cols[i % 3]:
+                default_val = 2.0 if var == "gammab" else None
+                # 为初始密度设置默认值
+                if var == "rh0b":
+                    default_val = 2.7  # 铝的默认密度
+                    
+                val = get_input_streamlit(
+                    label=var,
+                    var_name=var,
+                    key=f"b_{var}",
+                    default=default_val,
+                    unit="g/cm³" if var.startswith("rh") else 
+                         "km/s" if var in ["Db", "C0b", "ub"] else 
+                         "GPa·cm³/g" if var in ["E0b", "Eb"] else
+                         "GPa" if var == "Pb" else 
+                         "K" if var == "Tb" else "无量纲",
+                    desc="基板初始密度（必须输入）" if var == "rh0b" else
+                         "基板压缩密度" if var == "rhb" else
+                         "基板冲击波速度" if var == "Db" else
+                         "基板体声速" if var == "C0b" else
+                         "基板Hugoniot参数" if var == "Sb" else
+                         "基板初始内能密度" if var == "E0b" else
+                         "基板压缩后内能密度" if var == "Eb" else
+                         "基板粒子速度" if var == "ub" else
+                         "基板冲击压力" if var == "Pb" else
+                         "基板格吕奈森系数" if var == "gammab" else
+                         "基板冲击温度"
+                )
+                input_params[var] = val
+                sym_vars[var] = symbols(var)
+
+    # 样品参数
+    with st.expander(f"{sample_material} 样品参数", expanded=True):
+        cols = st.columns(3)
+        for i, var in enumerate(variables["s"]):
+            # 温度参数仅在计算温度时显示
+            if var.startswith('T') and not calculate_temp:
+                continue
+                
+            with cols[i % 3]:
+                default_val = 2.0 if var == "gammas" else None
+                # 为初始密度设置默认值
+                if var == "rh0s":
+                    default_val = 8.96  # 铜的默认密度
+                    
+                val = get_input_streamlit(
+                    label=var,
+                    var_name=var,
+                    key=f"s_{var}",
+                    default=default_val,
+                    unit="g/cm³" if var.startswith("rh") else 
+                         "km/s" if var in ["Ds", "C0s", "us"] else 
+                         "GPa·cm³/g" if var in ["E0s", "Es"] else
+                         "GPa" if var == "Ps" else
+                         "K" if var == "Ts" else "无量纲",
+                    desc="样品初始密度（必须输入）" if var == "rh0s" else
+                         "样品压缩密度" if var == "rhs" else
+                         "样品冲击波速度" if var == "Ds" else
+                         "样品体声速" if var == "C0s" else
+                         "样品Hugoniot参数S" if var == "Ss" else
+                         "样品初始内能密度" if var == "E0s" else
+                         "样品压缩后内能密度" if var == "Es" else
+                         "样品粒子速度" if var == "us" else
+                         "样品冲击压力" if var == "Ps" else
+                         "样品格吕奈森系数" if var == "gammas" else
+                         "样品冲击温度"
+                )
+                input_params[var] = val
+                sym_vars[var] = symbols(var)
+
+    # 保存当前参数按钮
+    col_save, col_other = st.columns([1, 3])
+    with col_save:
+        if st.button("保存当前参数到数据库"):
+            # 准备输入数据字典
+            input_data = {
+                'rho0': input_params.get('rh0f'),
+                'Us': input_params.get('Df'),
+                'Up': input_params.get('uf'),
+                'P': input_params.get('Pf'),
+                'gamma': input_params.get('gammaf'),
+                'T': input_params.get('Tf') if calculate_temp else None
+            }
+            # 过滤符号变量（未知数）
+            input_data = {k: v[0] if isinstance(v, list) else v for k, v in input_data.items() 
+                         if not isinstance(v, Symbol) and v is not None}
+            
+            count = save_input_data_to_db(input_data, sample_material, exp_method)
+            if count > 0:
+                st.success(f"已保存到 {sample_material} 数据集，共 {count} 条记录")
+
+    # 参数组合限制
+    range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
+    total_combinations = 1
+    for v in range_params.values():
+        total_combinations *= len(v)
+    
+    max_combinations = st.slider(
+        "最大参数组合数（过多会影响速度）", 
+        min_value=10, 
+        max_value=1000, 
+        value=min(100, total_combinations)
+    )
+
+    if st.button("开始求解"):
+        valid = True
+        # 检查关键参数是否已输入
+        for var in ['rh0f', 'rh0b', 'rh0s']:
+            if isinstance(input_params.get(var), Symbol):
+                valid = False
+                st.error(f"{var}（初始密度）是必填参数，请输入值")
+        
+        # 检查其他参数输入有效性
+        for var, val in input_params.items():
+            if val is None:
+                valid = False
+                st.error(f"{var} 输入无效，请检查")
+        
+        if not valid:
+            return
+            
+        combinations = itertools.product(*[[(k, val) for val in v] for k, v in range_params.items()])
+        
+        # 截断过多的组合
+        combinations = list(combinations)
+        if len(combinations) > max_combinations:
+            st.warning(f"参数组合过多（{len(combinations)}），为提高速度已截断至 {max_combinations} 个")
+            combinations = combinations[:max_combinations]
+        
+        results = []
+        progress_bar = st.progress(0)
+        total = len(combinations)
+        count = 0
+        invalid_solutions = 0
+        
+        for combo in combinations:
+            count += 1
+            if count % 10 == 0 or count == total:
+                progress_bar.progress(count / total)
+                
+            current_subs = {sym_vars[k]: v for k, v in combo}
+            
+            # 方程组（与数据库模式相同）
+            eqs = [
+                # 飞片质量守恒: rho0f·Df = rhf·(Df - uf)
+                Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
+                # 飞片速度与粒子速度关系: w = Df + uf
+                Eq(sym_vars['w'] - (sym_vars['Df'] + sym_vars['uf']), 0),
+                # 基板质量守恒: rho0b·Db = rhb·(Db - ub)
+                Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
+                # 飞片动量守恒: Pf = rho0f·Df·uf
+                Eq(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*sym_vars['uf'], 0),
+                # 基板动量守恒: Pb = rho0b·Db·ub
+                Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*sym_vars['ub'], 0),
+                # 飞片能量守恒
+                Eq(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
+                # 基板能量守恒
+                Eq(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
+                # 飞片Hugoniot关系: Df = C0f + Sf·uf
+                Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*sym_vars['uf'], 0),
+                # 基板Hugoniot关系: Db = C0b + Sb·ub
+                Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*sym_vars['ub'], 0),
+                # 界面压力连续性: Pf = Pb
+                Eq(sym_vars['Pf'] - sym_vars['Pb'], 0),
+                # 界面粒子速度连续性: uf = ub
+                Eq(sym_vars['uf'] - sym_vars['ub'], 0)
+            ]
+            
+            # 添加温度相关方程
+            if calculate_temp:
+                eqs.append(Eq(sym_vars['Tf'] - 300 - (sym_vars['Ef'] - sym_vars['E0f'])*1e6 / 
+                             (Cv_values['f'] * (1 + sym_vars['gammaf']/2)), 0))
+                eqs.append(Eq(sym_vars['Tb'] - 300 - (sym_vars['Eb'] - sym_vars['E0b'])*1e6 / 
+                             (Cv_values['b'] * (1 + sym_vars['gammab']/2)), 0))
+            
+            # 判断样品与基板是否为同一材料
+            try:
+                is_same_material = (sample_material.lower() == base_material.lower())
+            except:
+                is_same_material = False
+                
+            if is_same_material:
+                # 样品与基板参数一致
+                eqs += [
+                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),
+                    Eq(sym_vars['ub'] - sym_vars['us'], 0),
+                    Eq(sym_vars['rhb'] - sym_vars['rhs'], 0),
+                    Eq(sym_vars['Db'] - sym_vars['Ds'], 0),
+                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0)
+                ]
+                
+                if calculate_temp:
+                    eqs += [
+                        Eq(sym_vars['Tb'] - sym_vars['Ts'], 0),
+                        Eq(sym_vars['gammab'] - sym_vars['gammas'], 0)
+                    ]
+            else:
+                # 样品与基板为不同材料
+                eqs += [
+                    Eq(sym_vars['rh0s']*sym_vars['Ds'] - sym_vars['rhb']*(sym_vars['Ds'] - sym_vars['us']), 0),
+                    Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*(2*sym_vars['ub'] - sym_vars['us']), 0),
+                    Eq(sym_vars['Ps'] - sym_vars['rh0s']*sym_vars['Ds']*sym_vars['us'], 0),
+                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0),
+                    Eq(sym_vars['Ds'] - sym_vars['C0s'] - sym_vars['Ss']*sym_vars['us'], 0),
+                    Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*(2*sym_vars['ub'] - sym_vars['us']), 0),
+                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),
+                    Eq(sym_vars['ub'] - sym_vars['us'], 0)
+                ]
+                
+                if calculate_temp:
+                    eqs.append(Eq(sym_vars['Ts'] - 300 - (sym_vars['Es'] - sym_vars['E0s'])*1e6 / 
+                                 (Cv_values['s'] * (1 + sym_vars['gammas']/2)), 0))
+            
+            substituted_eqs = [eq.subs(current_subs) for eq in eqs]
+            remaining_vars = list(set().union(*[eq.free_symbols for eq in substituted_eqs]))
+            
+            if not remaining_vars:
+                continue
+                
+            try:
+                # 构建初始猜测值
+                initial_guess = {}
+                known_params = {}
+                for k, v in current_subs.items():
+                    try:
+                        known_params[str(k)] = float(v)
+                    except:
+                        pass
+                
+                for var in remaining_vars:
+                    var_str = str(var)
+                    if var_str == 'w' and 'Df' in known_params and 'uf' in known_params:
+                        initial_guess[var] = known_params['Df'] + known_params['uf']
+                    elif var_str == 'Df' and 'w' in known_params and 'uf' in known_params:
+                        initial_guess[var] = known_params['w'] - known_params['uf']
+                    elif var_str == 'uf' and 'w' in known_params and 'Df' in known_params:
+                        initial_guess[var] = known_params['w'] - known_params['Df']
+                    elif var_str == 'Pf' and 'rh0f' in known_params and 'Df' in known_params and 'uf' in known_params:
+                        initial_guess[var] = known_params['rh0f'] * known_params['Df'] * known_params['uf']
+                    elif var_str.startswith(('rh0', 'rh')):
+                        initial_guess[var] = known_params.get('rh0f', 8.0)
+                    elif var_str.startswith(('D', 'C0', 'u')):
+                        initial_guess[var] = known_params.get('w', 10.0) / 2
+                    elif var_str == 'w':
+                        initial_guess[var] = 10.0
+                    elif var_str.startswith('P'):
+                        initial_guess[var] = 100.0
+                    elif var_str.startswith('gamma'):
+                        initial_guess[var] = 2.0
+                    elif var_str.startswith('T'):
+                        initial_guess[var] = 3000.0
+                    else:
+                        initial_guess[var] = 1.0
+                
+                solution = solve_numerically(substituted_eqs, {v:v for v in remaining_vars}, initial_guess)
+                
+                if solution:
+                    record = solution.copy()
+                    for k, v in current_subs.items():
+                        try:
+                            record[str(k)] = float(v)
+                        except:
+                            pass
+                    record['flyer_material'] = flyer_material
+                    record['base_material'] = base_material
+                    record['sample_material'] = sample_material
+                    results.append(record)
+                else:
+                    invalid_solutions += 1
+            except Exception as e:
+                st.warning(f"求解错误: {str(e)}")
+                invalid_solutions += 1
+        
+        if results:
+            st.success(f"求解完成，找到 {len(results)} 个有效解（过滤 {invalid_solutions} 个不合理解）")
+            
+            st.subheader("结果数据")
+            df = pd.DataFrame(results)
+            st.dataframe(df)
+            
+            csv = df.to_csv(index=False)
+            st.download_button(
+                label="下载结果数据",
+                data=csv,
+                file_name="manual_solver_results.csv",
+                mime="text/csv",
+            )
+            
+            st.subheader("结果可视化")
+            fig = plot_results_streamlit(results, calculate_temp)
+            if fig:
+                st.pyplot(fig)
+                buf = BytesIO()
+                fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+                buf.seek(0)
+                st.download_button(
+                    label="下载图表",
+                    data=buf,
+                    file_name="manual_analysis_results.png",
+                    mime="image/png"
+                )
+            
+            if st.button("保存结果到数据库"):
+                count = save_results_to_db(results, sample_material)
+                if count > 0:
+                    st.success(f"已保存 {count} 条记录到 {sample_material} 数据集")
+        else:
+            st.warning(f"未找到有效解，尝试了 {total} 组参数")
+
+    if st.button("返回主页"):
+        st.session_state.page = "home"
+        st.rerun()
+
+# 主程序入口
+def main():
+    # 初始化会话状态
+    if 'page' not in st.session_state:
+        st.session_state.page = "home"
+    if 'confirm_delete' not in st.session_state:
+        st.session_state.confirm_delete = False
+    if 'confirm_clear' not in st.session_state:
+        st.session_state.confirm_clear = False
+        
+    # 根据当前页面状态显示不同内容
+    if st.session_state.page == "home":
+        home_page()
+    elif st.session_state.page == "database_mode":
+        database_mode_page()
+    elif st.session_state.page == "manual_mode":
+        manual_mode_page()
+    elif st.session_state.page == "view_database":
         view_database()
+        # 返回按钮
+        if st.button("返回上一页"):
+            st.session_state.page = st.session_state.get('previous_page', 'home')
+            st.rerun()
 
 if __name__ == "__main__":
     main()
+
+
