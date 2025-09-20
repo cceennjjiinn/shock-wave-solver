@@ -1026,10 +1026,6 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", di
             st.error("请输入有效的范围数字 (例如: 开始=1.0, 结束=5.0, 步长=1.0)")
             return None
 
-# 数值求解器（改进版本，更好地处理未知数）
-from sympy import Equality, simplify  # 确保导入必要工具
-from scipy.optimize import least_squares  # 显式导入优化函数
-
 def solve_numerically(eqs, sym_vars, initial_guess):
     """使用数值方法求解方程组，修复变量映射和优化启动问题"""
     # 明确变量顺序：使用sorted确保变量顺序与初始猜测一致（关键修复）
