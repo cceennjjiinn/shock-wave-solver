@@ -2,599 +2,225 @@ import math
 import numpy as np
 import pandas as pd
 import streamlit as st
-from sympy import symbols, Eq, simplify, solve, sympify,Symbol
+from sympy import symbols, Eq, simplify
 from scipy.optimize import least_squares
-from io import BytesIO
 import matplotlib.pyplot as plt
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score, mean_squared_error
-import logging
+from io import BytesIO
 import itertools
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import SQLAlchemyError
-
-# 配置日志
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+import sqlite3
+from sqlalchemy import create_engine
+import os
 
 # 数据库配置
-DB_CONFIG = {
-    "sqlite": {
-        "path": "shock_wave_data.db"
-    },
-    "mysql": {
-        "host": "localhost",
-        "port": 3306,
-        "database": "shock_wave_db",
-        "user": "root",
-        "password": ""
-    }
-}
-
 DB_TYPE = "sqlite"
+DB_NAME = "shock_wave_data.db"
 db_engine = None
 
+# 数据库连接函数
 def create_db_engine(db_type):
     """创建数据库引擎"""
-    try:
-        if db_type == "sqlite":
-            return create_engine(f"sqlite:///{DB_CONFIG['sqlite']['path']}")
-        elif db_type == "mysql":
-            cfg = DB_CONFIG["mysql"]
-            return create_engine(f"mysql+pymysql://{cfg['user']}:{cfg['password']}@{cfg['host']}:{cfg['port']}/{cfg['database']}")
-    except Exception as e:
-        logger.error(f"创建数据库引擎失败: {str(e)}")
-        st.error(f"数据库连接失败: {str(e)}")
+    if db_type == "sqlite":
+        return create_engine(f"sqlite:///{DB_NAME}")
+    # 可以扩展其他数据库类型
     return None
 
-def query_database(query, params=None):
-    """执行数据库查询"""
-    global db_engine
-    if db_engine is None:
-        db_engine = create_db_engine(DB_TYPE)
-    
-    try:
-        with db_engine.connect() as conn:
-            result = conn.execute(text(query), params or {})
-            return [dict(row._mapping) for row in result]
-    except SQLAlchemyError as e:
-        logger.error(f"数据库查询失败: {str(e)}")
-        st.error(f"数据库查询失败: {str(e)}")
-        return None
-
-# 物理合理性检查函数 - 增强版
-def validate_physical合理性(data, material_type):
-    """检查物理参数的合理性，返回错误信息列表"""
-    errors = []
-    
-    # 密度检查 (g/cm³)
-    if 'rho0' in data and data['rho0'] is not None:
-        if data['rho0'] <= 0 or data['rho0'] > 20:
-            errors.append(f"{material_type}初始密度(rho0={data['rho0']})应在0到20 g/cm³之间")
-    
-    if 'rho' in data and data['rho'] is not None and 'rho0' in data and data['rho0'] is not None:
-        if data['rho'] <= 0 or data['rho'] > 50:
-            errors.append(f"{material_type}压缩密度(rho={data['rho']})应在0到50 g/cm³之间")
-        if data['rho'] <= data['rho0'] - 1e-3:  # 允许微小的数值误差
-            errors.append(f"{material_type}压缩密度(rho={data['rho']})应大于初始密度(rho0={data['rho0']})")
-    
-    # 速度检查 (km/s)
-    for vel in ['Us', 'Up', 'D', 'u', 'w']:
-        if vel in data and data[vel] is not None:
-            if data[vel] < -1e-3:  # 允许微小的负值，用于数值稳定性
-                errors.append(f"{material_type}{vel}速度({data[vel]})不应为负值")
-            if data[vel] > 100:
-                errors.append(f"{material_type}{vel}速度({data[vel]})应小于100 km/s")
-    
-    # 冲击波速度应大于粒子速度 (允许微小误差)
-    if 'Us' in data and data['Us'] is not None and 'Up' in data and data['Up'] is not None:
-        if data['Us'] <= data['Up'] - 1e-3:
-            errors.append(f"{material_type}冲击波速度(Us={data['Us']})应大于粒子速度(Up={data['Up']})")
-    
-    # 压力检查 (GPa)
-    if 'P' in data and data['P'] is not None:
-        if data['P'] < -1e-3:  # 允许微小的负值，用于数值稳定性
-            errors.append(f"{material_type}压力(P={data['P']})不应为负值")
-        if data['P'] > 10000:
-            errors.append(f"{material_type}压力(P={data['P']})应小于10000 GPa")
-    
-    # 比体积比检查
-    if 'V_V0' in data and data['V_V0'] is not None:
-        if data['V_V0'] <= 0 or data['V_V0'] >= 1 + 1e-3:  # 允许微小的数值误差
-            errors.append(f"{material_type}比体积比(V/V0={data['V_V0']})应在0到1之间")
-    
-    # 格吕奈森系数检查
-    if 'gamma' in data and data['gamma'] is not None:
-        if data['gamma'] <= 0 or data['gamma'] > 20:
-            errors.append(f"{material_type}格吕奈森系数(gamma={data['gamma']})应在0到20之间")
-    
-    return errors
-
-# 数据库操作函数 - 优化查询效率
-@st.cache_data(ttl=3600)  # 缓存1小时
 def get_all_materials():
+    """获取所有材料名称"""
     try:
-        query = "SELECT DISTINCT material FROM shock_wave_all_data"
-        result = query_database(query)
-        if result:
-            return [row['material'] for row in result]
-        return []
+        query = "SELECT DISTINCT material FROM shock_wave_data"
+        df = pd.read_sql(query, db_engine)
+        return df['material'].tolist()
     except Exception as e:
-        logger.warning(f"获取材料列表失败: {str(e)}")
         st.warning(f"获取材料列表失败: {str(e)}")
         return []
 
-def get_material_data(material_name, fields=None):
-    """按需查询字段以减少数据传输，确保包含实验方法字段"""
+def get_material_data(material, fields=None):
+    """获取指定材料的数据"""
     try:
-        if fields is None:
-            fields = '*'  # 默认查询所有字段
+        if fields:
+            columns = ", ".join(fields)
+            query = f"SELECT {columns} FROM shock_wave_data WHERE material = ?"
         else:
-            # 确保包含实验方法字段用于颜色区分
-            if 'exp_method' not in fields:
-                fields.append('exp_method')
-            fields = ', '.join(fields)  # 按需指定字段
+            query = "SELECT * FROM shock_wave_data WHERE material = ?"
             
-        query = f"SELECT {fields} FROM shock_wave_all_data WHERE material = :material"
-        result = query_database(query, {'material': material_name})
-        
-        # 转换为DataFrame
-        df = pd.DataFrame(result) if result else pd.DataFrame()
-        
-        # 验证并清理数据
-        if not df.empty:
-            invalid_indices = []
-            for idx, row in df.iterrows():
-                errors = validate_physical合理性(row.to_dict(), material_name)
-                if errors:
-                    invalid_indices.append(idx)
-            
-            if invalid_indices:
-                st.warning(f"材料 {material_name} 中有 {len(invalid_indices)} 条记录不符合物理规律，已自动过滤")
-                df = df.drop(invalid_indices)
-        
+        conn = sqlite3.connect(DB_NAME)
+        df = pd.read_sql(query, conn, params=(material,))
+        conn.close()
         return df
     except Exception as e:
-        logger.warning(f"获取材料数据失败: {str(e)}")
         st.warning(f"获取材料数据失败: {str(e)}")
         return pd.DataFrame()
 
-def save_results_to_db(results, material_name="Copper"):
-    """保存多组求解结果到数据库，返回保存的记录数"""
-    if not results:
-        return 0
-        
+def save_input_parameters(params, material, source):
+    """保存输入参数到数据库"""
     try:
-        count = 0
-        invalid_count = 0
-        with db_engine.begin() as conn:
-            for result in results:
-                # 检查物理合理性
-                errors = validate_physical合理性({
-                    'rho0': result.get('rh0f', 0),
-                    'Us': result.get('Df', 0),
-                    'Up': result.get('uf', 0),
-                    'P': result.get('Pf', 0),
-                    'rho': result.get('rhf', 0),
-                    'V_V0': result.get('V_V0', 0),
-                    'gamma': result.get('gammaf', 0),
-                    'T': result.get('Tf', 0) if 'Tf' in result else 0
-                }, material_name)
-                
-                if errors:
-                    invalid_count += 1
-                    continue
-                    
-                # 检查必要的参数是否存在
-                required_params = ['rh0f', 'Df', 'uf', 'Pf']
-                if not all(param in result for param in required_params):
-                    continue
-                    
-                data = {
-                    'material': material_name,
-                    'rho0': result.get('rh0f', 0),
-                    'Us': result.get('Df', 0),
-                    'Up': result.get('uf', 0),
-                    'P': result.get('Pf', 0),
-                    'V': result.get('V', 0),
-                    'rho': result.get('rhf', 0),
-                    'V_V0': result.get('V_V0', 0),
-                    'exp_method': 'calculated',
-                    'gamma': result.get('gammaf', 0),
-                    'T': result.get('Tf', 0) if 'Tf' in result else 0
-                }
-                stmt = text("""
-                    INSERT INTO shock_wave_all_data 
-                    (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T) 
-                    VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
-                """)
-                conn.execute(stmt, data)
-                count += 1
+        df = pd.DataFrame([params])
+        df['material'] = material
+        df['source'] = source
+        df['timestamp'] = pd.Timestamp.now()
         
-        if invalid_count > 0:
-            st.warning(f"过滤了 {invalid_count} 个不合理解，未保存到数据库")
-        logger.info(f"成功保存 {count} 条记录到数据库")
-        return count
+        # 只保存有值的参数
+        df = df.dropna(axis=1, how='all')
+        
+        df.to_sql('shock_wave_data', db_engine, if_exists='append', index=False)
+        return len(df)
     except Exception as e:
-        logger.error(f"保存结果到数据库失败: {str(e)}")
-        st.error(f"保存失败: {str(e)}")
+        st.error(f"保存参数失败: {str(e)}")
         return 0
 
-def save_input_parameters(input_params, material_name="Copper", exp_method="manual_input"):
-    """保存当前输入的参数到数据库，包含物理合理性检查"""
+def save_results_to_db(results, material):
+    """保存计算结果到数据库"""
     try:
-        # 提取关键参数并检查物理合理性
-        data_dict = {
-            'rho0': input_params.get('rh0f') if isinstance(input_params.get('rh0f'), (int, float)) else 0,
-            'Us': input_params.get('Df') if isinstance(input_params.get('Df'), (int, float)) else 0,
-            'Up': input_params.get('uf') if isinstance(input_params.get('uf'), (int, float)) else 0,
-            'P': input_params.get('Pf') if isinstance(input_params.get('Pf'), (int, float)) else 0,
-            'rho': input_params.get('rhf') if isinstance(input_params.get('rhf'), (int, float)) else 0,
-            'gamma': input_params.get('gammaf') if isinstance(input_params.get('gammaf'), (int, float)) else 0,
-            'T': input_params.get('Tf') if isinstance(input_params.get('Tf'), (int, float)) else 0
-        }
+        df = pd.DataFrame(results)
+        df['material'] = material
+        df['source'] = 'calculated'
+        df['timestamp'] = pd.Timestamp.now()
         
-        # 检查物理合理性
-        errors = validate_physical合理性(data_dict, material_name)
-        if errors:
-            st.error("输入参数不符合物理规律:")
-            for err in errors:
-                st.error(f"- {err}")
-            return 0
+        # 只保存有值的参数
+        df = df.dropna(axis=1, how='all')
         
-        data = {
-            'material': material_name,
-            'rho0': data_dict['rho0'],
-            'Us': data_dict['Us'],
-            'Up': data_dict['Up'],
-            'P': data_dict['P'],
-            'V': 0,  # 无法直接从输入参数获取
-            'rho': data_dict['rho'],
-            'V_V0': 0,  # 无法直接从输入参数获取
-            'exp_method': exp_method,
-            'gamma': data_dict['gamma'],
-            'T': data_dict['T']
-        }
-        
-        with db_engine.begin() as conn:
-            stmt = text("""
-                INSERT INTO shock_wave_all_data 
-                (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T) 
-                VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
-            """)
-            conn.execute(stmt, data)
-        logger.info(f"成功保存输入参数到 {material_name} 数据集")
-        return 1
+        df.to_sql('shock_wave_data', db_engine, if_exists='append', index=False)
+        return len(df)
     except Exception as e:
-        logger.error(f"保存输入参数失败: {str(e)}")
-        st.error(f"保存输入参数失败: {str(e)}")
+        st.error(f"保存结果失败: {str(e)}")
         return 0
 
-def save_input_data_to_db(input_data, material_name, exp_method="manual_input"):
-    """保存计算结果到数据库，返回保存的记录数，包含物理合理性检查"""
-    try:
-        # 验证输入数据的有效性
-        required_fields = ['rho0', 'Us', 'Up', 'P']
-        for field in required_fields:
-            if field not in input_data or input_data[field] is None:
-                st.error(f"保存失败：缺少必要的参数 {field}")
-                return 0
-                
-            # 确保数值有效
-            if not isinstance(input_data[field], (int, float)) or input_data[field] <= 0:
-                st.error(f"保存失败：参数 {field} 必须是正数")
-                return 0
-        
-        # 检查物理合理性
-        errors = validate_physical合理性(input_data, material_name)
-        if errors:
-            st.error("输入数据不符合物理规律:")
-            for err in errors:
-                st.error(f"- {err}")
-            return 0
-        
-        with db_engine.begin() as conn:
-            data = {
-                'material': material_name,
-                'rho0': float(input_data['rho0']),
-                'Us': float(input_data['Us']),
-                'Up': float(input_data['Up']),
-                'P': float(input_data['P']),
-                'V': float(input_data.get('V', 0)),
-                'rho': float(input_data.get('rho', 0)),
-                'V_V0': float(input_data.get('V_V0', 0)),
-                'exp_method': exp_method,
-                'gamma': float(input_data.get('gamma', 0)),
-                'T': float(input_data.get('T', 0))
-            }
-            stmt = text("""
-                INSERT INTO shock_wave_all_data 
-                (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T) 
-                VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
-            """)
-            conn.execute(stmt, data)
-        logger.info(f"成功保存输入数据到 {material_name} 数据集")
-        return 1
-    except Exception as e:
-        logger.error(f"保存输入数据失败: {str(e)}")
-        st.error(f"保存输入数据失败: {str(e)}")
-        return 0
-
-# 批量导入数据到数据库，增加物理合理性检查
-def bulk_import_data(df, material_name, exp_method="bulk_import"):
-    """批量导入数据到数据库，返回成功导入的记录数，包含物理合理性检查"""
+def fit_material_data(df, material_name, material_type):
+    """拟合材料的Hugoniot关系"""
     if df.empty:
-        return 0
-        
-    required_columns = ['rho0', 'Us', 'Up']  # 至少需要这三个参数
-    missing_cols = [col for col in required_columns if col not in df.columns]
+        st.warning(f"{material_type}材料 {material_name} 没有可用数据，使用默认参数")
+        return {
+            'rho0': 8.96,  # 默认铜的密度
+            'C0': 3.94,    # 默认铜的体声速
+            'S': 1.48      # 默认铜的Hugoniot参数
+        }
     
-    if missing_cols:
-        st.error(f"导入失败：CSV文件缺少必要的列: {', '.join(missing_cols)}")
-        return 0
+    # 计算平均初始密度
+    rho0 = df['rho0'].mean() if 'rho0' in df.columns and not df['rho0'].isna().all() else 8.96
+    
+    # 拟合Hugoniot关系 Us = C0 + S*Up
+    if 'Us' in df.columns and 'Up' in df.columns:
+        valid_data = df.dropna(subset=['Us', 'Up'])
+        valid_data = valid_data[(valid_data['Us'] > valid_data['Up']) & (valid_data['Us'] > 0) & (valid_data['Up'] >= 0)]
         
-    try:
-        count = 0
-        invalid_count = 0
-        with db_engine.begin() as conn:
-            for _, row in df.iterrows():
-                # 跳过包含空值的行
-                if row[required_columns].isnull().any():
-                    continue
-                    
-                # 检查物理合理性
-                row_dict = row.to_dict()
-                errors = validate_physical合理性(row_dict, material_name)
-                if errors:
-                    invalid_count += 1
-                    continue
-                
-                data = {
-                    'material': material_name,
-                    'rho0': row.get('rho0', 0),
-                    'Us': row.get('Us', 0),
-                    'Up': row.get('Up', 0),
-                    'P': row.get('P', 0),
-                    'V': row.get('V', 0),
-                    'rho': row.get('rho', 0),
-                    'V_V0': row.get('V_V0', 0),
-                    'exp_method': exp_method,
-                    'gamma': row.get('gamma', 0),
-                    'T': row.get('T', 0)
-                }
-                stmt = text("""
-                    INSERT INTO shock_wave_all_data 
-                    (material, rho0, Us, Up, P, V, rho, V_V0, exp_method, gamma, T) 
-                    VALUES (:material, :rho0, :Us, :Up, :P, :V, :rho, :V_V0, :exp_method, :gamma, :T)
-                """)
-                conn.execute(stmt, data)
-                count += 1
-        
-        if invalid_count > 0:
-            st.warning(f"过滤了 {invalid_count} 个不合理解，未导入数据库")
-        logger.info(f"成功批量导入 {count} 条记录到 {material_name} 数据集")
-        return count
-    except Exception as e:
-        logger.error(f"批量导入失败: {str(e)}")
-        st.error(f"批量导入失败: {str(e)}")
-        return 0
+        if len(valid_data) >= 2:
+            C0, S = fit_hugoniot(valid_data)
+            st.success(f"{material_type}材料 {material_name} 拟合完成: Us = {C0:.2f} + {S:.2f}·Up, 初始密度 = {rho0:.2f} g/cm³")
+            return {'rho0': rho0, 'C0': C0, 'S': S}
+        else:
+            st.warning(f"{material_type}材料 {material_name} 有效数据不足，使用默认参数")
+    
+    # 使用默认参数
+    default_params = {
+        '铜': {'rho0': 8.96, 'C0': 3.94, 'S': 1.48},
+        '铝': {'rho0': 2.70, 'C0': 5.32, 'S': 1.37},
+        '钢': {'rho0': 7.85, 'C0': 4.57, 'S': 1.49},
+        '塑料': {'rho0': 1.15, 'C0': 2.50, 'S': 1.50},
+        '陶瓷': {'rho0': 3.80, 'C0': 6.00, 'S': 1.60}
+    }.get(material_name, {'rho0': 8.96, 'C0': 3.94, 'S': 1.48})
+    
+    st.info(f"{material_type}材料 {material_name} 使用默认参数: Us = {default_params['C0']:.2f} + {default_params['S']:.2f}·Up, 初始密度 = {default_params['rho0']:.2f} g/cm³")
+    return default_params
 
-# 批量删除选中的记录
-def bulk_delete_records(ids):
-    """删除指定ID的记录，返回删除的记录数"""
-    if not ids or not isinstance(ids, list):
-        return 0
-        
+def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", disabled=False):
+    """创建Streamlit输入框，支持范围输入"""
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        val = st.text_input(
+            f"{label} ({unit})", 
+            value=str(default) if default is not None else "",
+            key=key,
+            help=desc,
+            disabled=disabled
+        )
+    
+    # 解析输入值
+    if not val.strip():
+        return symbols(var_name)  # 返回符号表示未知数
     try:
-        with db_engine.begin() as conn:
-            placeholders = ', '.join([':id' + str(i) for i in range(len(ids))])
-            params = {'id' + str(i): id for i, id in enumerate(ids)}
-            stmt = text(f"DELETE FROM shock_wave_all_data WHERE id IN ({placeholders})")
-            result = conn.execute(stmt, params)
-            deleted_count = result.rowcount
-            logger.info(f"成功删除 {deleted_count} 条记录")
-            return deleted_count
-    except Exception as e:
-        logger.error(f"删除失败: {str(e)}")
-        st.error(f"删除失败: {str(e)}")
-        return 0
-
-# 清空指定材料的所有数据
-def clear_material_data(material_name):
-    """清空指定材料的所有数据，返回删除的记录数"""
-    if not material_name:
-        return 0
-        
-    try:
-        with db_engine.begin() as conn:
-            stmt = text("DELETE FROM shock_wave_all_data WHERE material = :material")
-            result = conn.execute(stmt, {'material': material_name})
-            deleted_count = result.rowcount
-            logger.info(f"成功清空 {material_name} 的所有 {deleted_count} 条记录")
-            return deleted_count
-    except Exception as e:
-        logger.error(f"清空数据失败: {str(e)}")
-        st.error(f"清空数据失败: {str(e)}")
-        return 0
+        # 检查是否是范围输入
+        if '-' in val:
+            parts = val.split('-')
+            if len(parts) == 2:
+                start = float(parts[0].strip())
+                end = float(parts[1].strip())
+                if start < end:
+                    return np.linspace(start, end, 5).tolist()  # 生成5个点的范围
+        # 单个值
+        return float(val)
+    except:
+        st.error(f"{label} 输入格式错误，请输入数字或范围（如: 1-5）")
+        return None
 
 def view_database():
-    """显示数据库内容，包含批量添加和删除功能"""
-    with st.expander("数据库内容", expanded=True):
-        # 数据库类型切换
-        global DB_TYPE, db_engine
-        new_db_type = st.radio("选择数据库类型", ["sqlite", "mysql"], 
-                              index=0 if DB_TYPE == "sqlite" else 1)
-        if new_db_type != DB_TYPE:
-            DB_TYPE = new_db_type
-            db_engine = create_db_engine(DB_TYPE)
-            st.success(f"已切换至{DB_TYPE}数据库")
-            st.rerun()
+    """查看数据库内容"""
+    st.title("数据库查看与管理")
+    
+    # 显示所有材料
+    materials = get_all_materials()
+    if not materials:
+        st.info("数据库为空")
+        return
+    
+    # 选择材料
+    selected_material = st.selectbox("选择材料", materials)
+    
+    # 获取并显示数据
+    df = get_material_data(selected_material)
+    if not df.empty:
+        st.subheader(f"{selected_material} 的数据记录 ({len(df)})")
         
-        # 显示当前数据库配置
-        with st.expander("数据库配置", expanded=False):
-            if DB_TYPE == "mysql":
-                config = DB_CONFIG["mysql"]
-                st.text(f"主机: {config['host']}")
-                st.text(f"端口: {config['port']}")
-                st.text(f"数据库: {config['database']}")
-                st.text(f"用户: {config['user']}")
-            else:
-                st.text(f"数据库文件: {DB_CONFIG['sqlite']['path']}")
+        # 显示数据
+        st.dataframe(df)
         
-        # 批量操作区域
-        st.subheader("批量数据操作")
-        col1, col2 = st.columns(2)
+        # 数据下载
+        csv = df.to_csv(index=False)
+        st.download_button(
+            label="下载数据",
+            data=csv,
+            file_name=f"{selected_material}_data.csv",
+            mime="text/csv",
+        )
         
-        # 批量导入部分
-        with col1:
-            st.subheader("批量导入数据")
-            new_material = st.text_input("材料名称", help="输入要导入数据的材料名称，使用英文")
-            uploaded_file = st.file_uploader("选择CSV文件", type="csv")
-            exp_method = st.text_input("实验方法/数据来源", value="bulk_import")
+        # 数据删除功能
+        if st.button("删除所有数据", type="primary"):
+            st.session_state.confirm_delete = True
             
-            if st.button("导入数据"):
-                if not new_material:
-                    st.error("请输入材料名称")
-                elif uploaded_file is None:
-                    st.error("请选择CSV文件")
-                else:
-                    # 读取CSV文件
+        if st.session_state.confirm_delete:
+            st.warning("确定要删除所有数据吗？此操作不可恢复！")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("确认删除"):
                     try:
-                        df = pd.read_csv(uploaded_file)
-                        st.success(f"成功读取CSV文件，包含 {len(df)} 条记录")
-                        st.dataframe(df.head())  # 显示前几行预览
-                        
-                        # 导入数据
-                        count = bulk_import_data(df, new_material, exp_method)
-                        if count > 0:
-                            st.success(f"成功导入 {count} 条记录（已过滤不符合物理规律的行）")
-                            st.rerun()
-                        else:
-                            st.warning("没有导入任何记录，请检查数据格式和物理合理性")
+                        conn = sqlite3.connect(DB_NAME)
+                        cursor = conn.cursor()
+                        cursor.execute("DELETE FROM shock_wave_data WHERE material = ?", (selected_material,))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"已删除 {selected_material} 的所有数据")
+                        st.session_state.confirm_delete = False
+                        st.rerun()
                     except Exception as e:
-                        st.error(f"读取CSV文件失败: {str(e)}")
-        
-        # 批量删除部分
-        with col2:
-            st.subheader("批量删除数据")
-            materials = get_all_materials()
-            if materials:
-                del_material = st.selectbox("选择要操作的材料", materials, key="del_material")
-                
-                # 显示该材料的数据供选择删除
-                df = get_material_data(del_material)
-                if not df.empty and 'id' in df.columns:
-                    # 添加复选框选择要删除的记录
-                    df['选择'] = False
-                    edited_df = st.data_editor(
-                        df,
-                        column_config={
-                            "选择": st.column_config.CheckboxColumn(
-                                "选择删除",
-                                default=False,
-                            )
-                        },
-                        disabled=df.columns.difference(["选择"]),
-                        hide_index=True,
-                    )
-                    
-                    # 获取选中的记录ID
-                    selected_ids = edited_df[edited_df['选择']]['id'].tolist()
-                    
-                    col_del1, col_del2 = st.columns(2)
-                    with col_del1:
-                        if st.button("删除所选记录"):
-                            if selected_ids:
-                                if st.session_state.get('confirm_delete', False):
-                                    deleted = bulk_delete_records(selected_ids)
-                                    if deleted > 0:
-                                        st.success(f"成功删除 {deleted} 条记录")
-                                        st.session_state['confirm_delete'] = False
-                                        st.rerun()
-                                    else:
-                                        st.warning("删除失败或没有记录被删除")
-                                else:
-                                    st.warning("请确认删除操作")
-                                    st.session_state['confirm_delete'] = True
-                                    st.rerun()
-                            else:
-                                st.warning("请先选择要删除的记录")
-                    
-                    with col_del2:
-                        if st.button("清空该材料所有数据"):
-                            if st.session_state.get('confirm_clear', False):
-                                deleted = clear_material_data(del_material)
-                                if deleted > 0:
-                                    st.success(f"成功清空 {del_material} 的所有 {deleted} 条记录")
-                                    st.session_state['confirm_clear'] = False
-                                    st.rerun()
-                                else:
-                                    st.warning("清空失败或该材料没有数据")
-                            else:
-                                st.warning("此操作将删除该材料所有数据，请确认")
-                                st.session_state['confirm_clear'] = True
-                                st.rerun()
-                else:
-                    st.info(f"材料 {del_material} 暂无数据可删除")
-            else:
-                st.info("数据库中暂无材料数据")
-        
-        # 数据查看部分
-        st.subheader("数据查看与导出")
-        materials = get_all_materials()
-        if not materials:
-            st.info("数据库中暂无数据")
-            return
-            
-        selected_material = st.selectbox("选择材料查看数据", materials, key="view_material")
-        df = get_material_data(selected_material)
-        
-        if df.empty:
-            st.info(f"材料 {selected_material} 暂无有效数据")
-        else:
-            st.info(f"材料 {selected_material} 共有 {len(df)} 条有效记录（已过滤不符合物理规律的数据）")
-            st.dataframe(df)
-            
-            # 提供下载选项
-            csv = df.to_csv(index=False)
-            st.download_button(
-                label=f"下载 {selected_material} 数据",
-                data=csv,
-                file_name=f"{selected_material}_data.csv",
-                mime="text/csv",
-            )
-            
-            # 提供CSV模板下载，方便用户按格式准备数据
-            if st.button("下载数据导入模板"):
-                template = pd.DataFrame(columns=[
-                    'rho0', 'Us', 'Up', 'P', 'V', 'rho', 
-                    'V_V0', 'gamma', 'T'
-                ])
-                # 填充符合物理规律的示例数据（铜的典型值）
-                template.loc[0] = [8.96, 5.0, 1.0, 44.8, 0.089, 11.2, 0.8, 2.0, 3000]
-                csv = template.to_csv(index=False)
-                st.download_button(
-                    label="下载CSV模板",
-                    data=csv,
-                    file_name="shock_wave_data_template.csv",
-                    mime="text/csv",
-                    on_click=lambda: st.success("模板已准备好下载，包含符合物理规律的示例数据")
-                )
+                        st.error(f"删除失败: {str(e)}")
+            with col2:
+                if st.button("取消"):
+                    st.session_state.confirm_delete = False
+    else:
+        st.info(f"没有 {selected_material} 的数据")
 
 # 冲击波参数计算（包含温度计算）
 def calculate_shock_parameters(U_s, u_p, rho0, gamma=2.0, Cv=385, T0=300, calculate_temp=True):
-    """根据Rankine-Hugoniot守恒关系计算冲击波参数，增加物理约束检查"""
-    # 物理约束检查（放宽容差）
+    """根据Rankine-Hugoniot守恒关系计算冲击波参数，包含物理约束检查"""
+    # 物理约束检查
     tolerance = 1e-3
-    if U_s <= u_p - tolerance:  # 允许微小的数值误差
+    if U_s <= u_p - tolerance:
         raise ValueError(f"冲击波速度 (Us={U_s}) 必须大于粒子速度 (Up={u_p})")
     if rho0 <= tolerance:
         raise ValueError(f"初始密度 (rho0={rho0}) 必须为正数")
-    if U_s <= tolerance or u_p < -tolerance:  # 允许微小的负值，用于数值稳定性
+    if U_s <= tolerance or u_p < -tolerance:
         raise ValueError(f"速度参数必须非负，且冲击波速度必须为正数")
     
     # 动量守恒: P = rho0 * U_s * u_p
-    # 单位转换: (g/cm³) * (km/s) * (km/s) = 1e3 kg/m³ * 1e3 m/s * 1e3 m/s = 1e9 Pa = 1 GPa
     P = rho0 * U_s * u_p
     
     # 质量守恒推导比体积: V = (1/rho0) * (1 - u_p/U_s)
@@ -606,30 +232,29 @@ def calculate_shock_parameters(U_s, u_p, rho0, gamma=2.0, Cv=385, T0=300, calcul
     # 比体积比: V/V0 = 1 - u_p/U_s
     V_V0 = V * rho0  # 由于V0 = 1/rho0，V/V0 = V * rho0
     
-    # 检查计算结果的物理合理性（放宽容差）
+    # 检查计算结果的物理合理性
     if rho <= rho0 - tolerance:
         raise ValueError(f"计算的压缩密度 (rho={rho}) 必须大于初始密度 (rho0={rho0})")
     if V_V0 >= 1 + tolerance:
         raise ValueError(f"计算的比体积比 (V/V0={V_V0}) 必须小于1")
-    if P <= -tolerance:  # 允许微小的负值，用于数值稳定性
+    if P <= -tolerance:
         raise ValueError(f"计算的压力 (P={P}) 必须为正数")
     
     T = None
     if calculate_temp:
         # 温度计算（Mie-Grüneisen方程近似）
-        # 单位转换: 1 GPa·cm³/g = 1e5 J/kg
         E_shock = 0.5 * P * (1/rho0 - V) * 1e6  # 冲击内能 (J/kg)
-        # 基于Mie-Grüneisen方程简化形式（适用于弱冲击，忽略体积修正项）
         T = T0 + (E_shock) / (Cv * (1 + gamma/2))  # 冲击温度 (K)
         
-        if T < 100:  # 放宽温度限制
+        if T < 100:
             raise ValueError(f"计算的冲击温度 (T={T}) 异常低")
     
     return P, V, rho, V_V0, T
 
-# Hugoniot关系拟合 - 优化数据预处理
+# Hugoniot关系拟合
 def fit_hugoniot(df):
-    # 过滤物理上无效的数据（放宽条件）
+    """拟合Hugoniot关系 Us = C0 + S*Up"""
+    # 过滤物理上无效的数据
     tolerance = 1e-3
     df = df[(df['Us'] > df['Up'] - tolerance) & (df['Us'] > tolerance) & (df['Up'] >= -tolerance)]
     if len(df) < 2:
@@ -641,242 +266,14 @@ def fit_hugoniot(df):
     S = coeffs[0]    # 斜率参数
     C0 = coeffs[1]   # 截距（零压声速）
     
-    # 物理约束：S通常在1.3-2.0之间，C0应为正数（放宽条件）
-    if C0 <= -tolerance:  # 允许微小的负值，用于数值稳定性
-        st.warning(f"Hugoniot拟合的体声速 (C0={C0}) 为非正数，已调整为合理值")
+    # 物理约束调整
+    tolerance = 1e-3
+    if C0 <= -tolerance:
         C0 = max(1.0, abs(C0))  # 确保体声速为正数且合理
-        
-    if S < 0.5 or S > 5.0:  # 放宽范围
-        st.warning(f"Hugoniot参数 (S={S}) 超出典型范围 (1.0-3.0)，可能存在数据问题")
         
     return C0, S
 
-@st.cache_data(ttl=3600)  # 缓存拟合结果
-def fit_material_data(df, material_name, material_type):
-    if df is None or df.empty:
-        st.warning(f"{material_type}材料 '{material_name}' 没有数据")
-        return None
-    
-    # 过滤异常值（放宽条件）
-    tolerance = 1e-3
-    df = df[(df['Us'] > df['Up'] - tolerance) & (df['Us'] > tolerance) & (df['Up'] >= -tolerance)]
-    if len(df) < 2:
-        st.warning(f"{material_type}材料 '{material_name}' 的有效数据不足，无法进行拟合")
-        return None
-    
-    X = df['Up'].values.reshape(-1, 1)
-    y = df['Us'].values
-    
-    model = LinearRegression()
-    model.fit(X, y)
-    
-    # 拟合参数
-    C0 = model.intercept_    # 体声速 (km/s)
-    S = model.coef_[0]       # Hugoniot参数S
-    y_pred = model.predict(X)
-    
-    # 物理约束检查（放宽条件）
-    if C0 <= -tolerance:  # 允许微小的负值
-        st.warning(f"{material_type}材料 '{material_name}' 拟合的体声速 (C0={C0}) 为非正数，已调整")
-        C0 = max(1.0, abs(C0))
-        
-    if S < 0.5 or S > 5.0:  # 放宽范围
-        st.warning(f"{material_type}材料 '{material_name}' 的Hugoniot参数 (S={S}) 超出典型范围 (1.0-3.0)")
-    
-    # 拟合误差计算
-    r2 = r2_score(y, y_pred)
-    rmse = np.sqrt(mean_squared_error(y, y_pred))  # 均方根误差
-    mae = np.mean(np.abs(y - y_pred))              # 平均绝对误差
-    
-    st.info(f"{material_type}材料 {material_name} 拟合结果: Us = {C0:.4f} + {S:.4f}*Up")
-    st.info(f"拟合误差: R² = {r2:.4f}, RMSE = {rmse:.4f} km/s, MAE = {mae:.4f} km/s")
-    st.info(f"平均参数: ρ₀ = {df['rho0'].mean():.4f} g/cm³, 平均压力 = {df['P'].mean():.4f} GPa")
-    
-    # 按实验方法统计数据
-    if 'exp_method' in df.columns:
-        method_counts = df['exp_method'].value_counts()
-        st.info(f"实验方法分布: {', '.join([f'{k}: {v}条记录' for k, v in method_counts.items()])}")
-    
-    return {
-        "C0": C0, "S": S, "rho0": df['rho0'].mean(),
-        "r2": r2, "rmse": rmse, "mae": mae
-    }
-
-# 误差传播计算
-def calculate_error(params, param_errors):
-    """计算输出参数的误差（基于误差传播公式）"""
-    rho0, Us, Up = params['rho0'], params['Us'], params['Up']
-    rho0_err, Us_err, Up_err = param_errors['rho0'], param_errors['Us'], param_errors['Up']
-    
-    # 压力误差: P = rho0*Us*Up → 相对误差平方和
-    P_rel_err = (rho0_err/rho0)**2 + (Us_err/Us)** 2 + (Up_err/Up)**2
-    P_err = rho0*Us*Up * np.sqrt(P_rel_err)
-    
-    # 冲击波速度误差（简化）
-    Us_err = np.sqrt(Us_err**2 + (0.01*Us)** 2)  # 加入1%模型误差
-    
-    return {
-        "P_err": P_err,
-        "Us_err": Us_err,
-        "Up_err": Up_err
-    }
-
-# 输入函数 - 修复参数共享问题，确保空白输入被正确识别为未知数
-def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", disabled=False):
-    st.caption(f"{desc} | 单位: {unit}")
-    input_type = st.radio(
-        f"{label} 输入类型",
-        ["单一值", "多个值 (逗号分隔)", "范围值 (带步长)"],
-        key=f"{key}_type",
-        horizontal=True,
-        disabled=disabled,
-        help="选择输入方式：单一值、多个离散值或连续范围。留空将作为未知数求解"
-    )
-    
-    default_val = str(default) if default is not None else ""
-    
-    # 物理参数范围提示
-    param_ranges = {
-        'rh0': "典型范围: 0.1-20 g/cm³",
-        'D': "典型范围: 1-30 km/s",
-        'u': "典型范围: 0-20 km/s (小于冲击波速度)",
-        'P': "典型范围: 0.1-5000 GPa",
-        'gamma': "典型范围: 0.5-5.0",
-        'T': "典型范围: 300-100000 K",
-        'C0': "典型范围: 1-10 km/s",
-        'S': "典型范围: 1.3-2.0"
-    }
-    
-    # 提取参数类型前缀
-    param_type = next((k for k in param_ranges if var_name.startswith(k)), None)
-    if param_type:
-        st.caption(f"物理约束: {param_ranges[param_type]}")
-    
-    if input_type == "单一值":
-        val = st.text_input(label, default_val, key=f"{key}_single", disabled=disabled)
-        if val.strip() == "":  # 空白输入被视为未知数
-            return symbols(var_name)
-        try:
-            val_num = float(val)
-            # 基本物理范围检查（仅警告，不阻止输入）
-            if param_type == 'rh0' and (val_num <= 0 or val_num > 20):
-                st.warning(f"{label} 超出典型范围 (0.1-20 g/cm³)")
-            elif param_type == 'D' and (val_num <= 0 or val_num > 30):
-                st.warning(f"{label} 超出典型范围 (1-30 km/s)")
-            elif param_type == 'u' and (val_num < 0 or val_num > 20):
-                st.warning(f"{label} 超出典型范围 (0-20 km/s)")
-            elif param_type == 'P' and (val_num <= 0 or val_num > 5000):
-                st.warning(f"{label} 超出典型范围 (0.1-5000 GPa)")
-            elif param_type == 'gamma' and (val_num <= 0 or val_num > 10):
-                st.warning(f"{label} 超出典型范围 (0.5-5.0)")
-            return [val_num]
-        except ValueError:
-            st.error("请输入有效的数字 (例如: 3.14)")
-            return None
-    elif input_type == "多个值 (逗号分隔)":
-        val = st.text_input(
-            label, 
-            default_val, 
-            key=f"{key}_multi", 
-            disabled=disabled,
-            help="输入多个值，用逗号分隔 (例如: 1.5, 3.0, 4.5)"
-        )
-        if val.strip() == "":  # 空白输入被视为未知数
-            return symbols(var_name)
-        try:
-            # 处理可能的空格并分割
-            values = [float(x.strip()) for x in val.split(',') if x.strip()]
-            if not values:
-                st.error("请至少输入一个值")
-                return None
-                
-            # 检查范围
-            for val_num in values:
-                if param_type == 'rh0' and (val_num <= 0 or val_num > 20):
-                    st.warning(f"{label} 包含超出典型范围 (0.1-20 g/cm³) 的值")
-                    break
-                elif param_type == 'D' and (val_num <= 0 or val_num > 30):
-                    st.warning(f"{label} 包含超出典型范围 (1-30 km/s) 的值")
-                    break
-                elif param_type == 'u' and (val_num < 0 or val_num > 20):
-                    st.warning(f"{label} 包含超出典型范围 (0-20 km/s) 的值")
-                    break
-                    
-            return values
-        except ValueError:
-            st.error("请输入有效的逗号分隔数字 (例如: 1.0, 2.5, 3.8)")
-            return None
-    else:
-        st.caption("范围示例: 开始=1.0, 结束=5.0, 步长=1.0 → 生成 [1.0, 2.0, 3.0, 4.0, 5.0]")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            start = st.text_input(
-                f"{label} 起始值", 
-                default_val, 
-                key=f"{key}_start", 
-                disabled=disabled,
-                help="范围中的第一个值 (例如: 2.0)"
-            )
-        with col2:
-            end = st.text_input(
-                f"{label} 结束值", 
-                "", 
-                key=f"{key}_end", 
-                disabled=disabled,
-                help="范围中的最后一个值 (必须大于起始值, 例如: 10.0)"
-            )
-        with col3:
-            step = st.text_input(
-                f"{label} 步长 (可选)", 
-                "0.5", 
-                key=f"{key}_step", 
-                disabled=disabled,
-                help="增量值 (例如: 0.5 或 2.0, 默认 0.5)"
-            )
-            
-        if start.strip() == "" or end.strip() == "":  # 空白输入被视为未知数
-            return symbols(var_name)
-            
-        try:
-            start = float(start)
-            end = float(end)
-            step = float(step) if step else 0.5
-            
-            # 验证和修正输入
-            if step <= 0:
-                step = 0.5
-                st.warning("步长必须为正数，已自动设置为0.5")
-            if start > end:
-                start, end = end, start
-                st.warning("起始值大于结束值，已自动调整为升序")
-            if (end - start) < step:
-                st.warning("步长大于范围差值，将只返回起始值")
-                return [start]
-                
-            # 检查范围是否符合物理约束
-            if param_type == 'rh0':
-                if start < 0.1 or end > 20:
-                    st.warning(f"{label} 范围超出典型物理范围 (0.1-20 g/cm³)")
-            elif param_type == 'D':
-                if start < 1 or end > 30:
-                    st.warning(f"{label} 范围超出典型物理范围 (1-30 km/s)")
-            elif param_type == 'u':
-                if start < 0 or end > 20:
-                    st.warning(f"{label} 范围超出典型物理范围 (0-20 km/s)")
-                    
-            # 生成范围值
-            values = []
-            current = start
-            epsilon = 1e-9  # 处理浮点数精度问题
-            while current <= end + epsilon:
-                values.append(round(current, 6))
-                current += step
-            return values
-        except ValueError:
-            st.error("请输入有效的范围数字 (例如: 开始=1.0, 结束=5.0, 步长=1.0)")
-            return None
-
-# 冲击波求解器类 - 修正物理方程
+# 冲击波求解器类
 class ShockWaveSolver:
     def __init__(self):
         # 初始化所有参数（None表示未知）
@@ -892,30 +289,198 @@ class ShockWaveSolver:
             'rho0b': None, 'rho_b': None, 'C0b': None, 'S_b': None
         }
         
-        # 定义方程列表（每个方程是一个函数，返回是否可解及求解结果）
+        # 定义方程列表 - 调整顺序优先处理关键变量对
         self.equations = [
-            self.eq1,  # u_f = w - D_f (修正后的飞片速度关系)
-            self.eq2,  # D_f = C0f + S_f * u_f
-            self.eq3,  # p_f = rho0f * D_f * u_f (动量守恒)
-            self.eq4,  # rho_f = (rho0f * D_f) / (D_f - u_f) (质量守恒)
+            self.solve_uf_Df_pair,  # 联立求解u_f和D_f
+            self.solve_us_Ds_pair,  # 联立求解u_s和D_s
+            self.solve_ub_Db_pair,  # 联立求解u_b和D_b
+            self.eq1,  # u_f = w - D_f (飞片速度关系)
+            self.eq2,  # D_f = C0f + S_f * u_f (双向)
+            self.eq3,  # p_f = rho0f * D_f * u_f (双向)
+            self.eq4,  # rho_f = (rho0f * D_f) / (D_f - u_f)
             self.eq5,  # p_s = p_f (压力连续性)
-            self.eq6,  # 样品二次方程求u_s (动量守恒)
-            self.eq7,  # D_s = C0s + S_s * u_s
+            self.eq6,  # 样品二次方程求u_s (双向)
+            self.eq7,  # D_s = C0s + S_s * u_s (双向)
             self.eq8,  # rho_s = (rho0s * D_s) / (D_s - u_s)
             self.eq9,  # p_b = p_s (压力连续性)
-            self.eq10, # 基板二次方程求u_b
-            self.eq11, # D_b = C0b + S_b * u_b
+            self.eq10, # 基板二次方程求u_b (双向)
+            self.eq11, # D_b = C0b + S_b * u_b (双向)
             self.eq12  # rho_b = (rho0b * D_b) / (D_b - u_b)
         ]
+        
+        # 参数依赖关系图，用于提示缺失参数
+        self.dependency_graph = {
+            'u_f': ['w', 'D_f', 'C0f', 'S_f', 'D_f', 'rho0f', 'p_f'],
+            'D_f': ['w', 'u_f', 'C0f', 'S_f', 'u_f', 'rho0f', 'u_f', 'p_f'],
+            'p_f': ['rho0f', 'D_f', 'u_f', 'p_s'],
+            'w': ['u_f', 'D_f'],
+            'rho_f': ['rho0f', 'D_f', 'u_f'],
+            
+            'u_s': ['rho0s', 'S_s', 'C0s', 'p_s', 'C0s', 'S_s', 'D_s'],
+            'D_s': ['C0s', 'S_s', 'u_s', 'rho0s', 'u_s', 'rho_s'],
+            'p_s': ['p_f', 'p_b', 'rho0s', 'S_s', 'C0s', 'u_s'],
+            'rho_s': ['rho0s', 'D_s', 'u_s'],
+            
+            'u_b': ['rho0b', 'S_b', 'C0b', 'p_b', 'C0b', 'S_b', 'D_b'],
+            'D_b': ['C0b', 'S_b', 'u_b', 'rho0b', 'u_b', 'rho_b'],
+            'p_b': ['p_s', 'rho0b', 'S_b', 'C0b', 'u_b'],
+            'rho_b': ['rho0b', 'D_b', 'u_b']
+        }
+        
+        # 关键变量对及其联立方程信息
+        self.variable_pairs = {
+            ('u_f', 'D_f'): {
+                'required_params': ['w', 'C0f', 'S_f'],
+                'equation': lambda: self.solve_uf_Df_pair()
+            },
+            ('u_s', 'D_s'): {
+                'required_params': ['p_s', 'rho0s', 'C0s', 'S_s'],
+                'equation': lambda: self.solve_us_Ds_pair()
+            },
+            ('u_b', 'D_b'): {
+                'required_params': ['p_b', 'rho0b', 'C0b', 'S_b'],
+                'equation': lambda: self.solve_ub_Db_pair()
+            }
+        }
     
     def set_known_params(self, known_params):
         """设置已知参数（如{'w': 1000, 'C0f': 5000}）"""
         for key, value in known_params.items():
             if key in self.params:
                 self.params[key] = value
+            else:
+                print(f"警告: 未知参数 {key} 被忽略")
+    
+    def suggest_missing_params(self):
+        """分析并建议可能缺少的关键参数，包括联立求解提示"""
+        unknown_params = [k for k, v in self.params.items() if v is None]
+        suggestions = {}
+        
+        for param in unknown_params:
+            if param in self.dependency_graph:
+                possible_deps = [d for d in self.dependency_graph[param] if self.params[d] is None]
+                if possible_deps:
+                    suggestions[param] = possible_deps[:3]  # 取前3个可能的依赖
+        
+        # 添加联立求解提示
+        for (var1, var2), info in self.variable_pairs.items():
+            if self.params[var1] is None and self.params[var2] is None:
+                missing_in_pair = [p for p in info['required_params'] if self.params[p] is None]
+                if not missing_in_pair and all(self.params[p] is not None for p in info['required_params']):
+                    suggestions[f"{var1} 和 {var2} (联立求解)"] = "这两个参数可通过已知参数联立求解"
+                elif missing_in_pair:
+                    suggestions[f"{var1} 和 {var2} (需补充参数)"] = f"需补充: {missing_in_pair} 才能联立求解"
+        
+        return suggestions
+    
+    def solve_uf_Df_pair(self):
+        """联立求解u_f和D_f: u_f = w - D_f 和 D_f = C0f + S_f * u_f"""
+        # 检查是否有足够的已知参数
+        if (self.params['w'] is not None and 
+            self.params['C0f'] is not None and 
+            self.params['S_f'] is not None and 
+            self.params['u_f'] is None and 
+            self.params['D_f'] is None):
+            
+            # 联立方程求解
+            denominator = 1 + self.params['S_f']
+            if abs(denominator) < 1e-6:
+                return False  # 避免除以零
+            
+            D_f_val = (self.params['w'] + self.params['C0f'] * self.params['S_f']) / denominator
+            u_f_val = (self.params['w'] - self.params['C0f']) / denominator
+            
+            # 检查物理合理性
+            if D_f_val > u_f_val - 1e-3 and D_f_val > 0 and u_f_val >= -1e-3:
+                self.params['D_f'] = D_f_val
+                self.params['u_f'] = u_f_val
+                return True
+        return False
+    
+    def solve_us_Ds_pair(self):
+        """联立求解u_s和D_s: 动量守恒方程和Hugoniot关系"""
+        if (self.params['p_s'] is not None and
+            self.params['rho0s'] is not None and
+            self.params['C0s'] is not None and
+            self.params['S_s'] is not None and
+            self.params['u_s'] is None and
+            self.params['D_s'] is None):
+            
+            # 联立方程:
+            # p_s = rho0s * D_s * u_s
+            # D_s = C0s + S_s * u_s
+            # 代入得: p_s = rho0s * (C0s + S_s * u_s) * u_s
+            
+            a = self.params['rho0s'] * self.params['S_s']
+            b = self.params['rho0s'] * self.params['C0s']
+            c = -self.params['p_s']
+            delta = b**2 - 4*a*c
+            
+            if delta < 0:
+                return False  # 无实根
+                
+            sqrt_delta = math.sqrt(delta)
+            u1 = (-b + sqrt_delta) / (2*a)
+            u2 = (-b - sqrt_delta) / (2*a)
+            
+            # 选择物理合理的正根
+            u_s_val = u1 if u1 > 0 else u2
+            if u_s_val <= 0:  # 确保粒子速度为正
+                return False
+                
+            # 计算D_s并验证
+            D_s_val = self.params['C0s'] + self.params['S_s'] * u_s_val
+            if D_s_val <= u_s_val - 1e-3:  # 冲击波速度必须大于粒子速度
+                return False
+                
+            self.params['u_s'] = u_s_val
+            self.params['D_s'] = D_s_val
+            return True
+        return False
+    
+    def solve_ub_Db_pair(self):
+        """联立求解u_b和D_b: 动量守恒方程和Hugoniot关系"""
+        if (self.params['p_b'] is not None and
+            self.params['rho0b'] is not None and
+            self.params['C0b'] is not None and
+            self.params['S_b'] is not None and
+            self.params['u_b'] is None and
+            self.params['D_b'] is None):
+            
+            # 联立方程:
+            # p_b = rho0b * D_b * u_b
+            # D_b = C0b + S_b * u_b
+            # 代入得: p_b = rho0b * (C0b + S_b * u_b) * u_b
+            
+            a = self.params['rho0b'] * self.params['S_b']
+            b = self.params['rho0b'] * self.params['C0b']
+            c = -self.params['p_b']
+            delta = b**2 - 4*a*c
+            
+            if delta < 0:
+                return False  # 无实根
+                
+            sqrt_delta = math.sqrt(delta)
+            u1 = (-b + sqrt_delta) / (2*a)
+            u2 = (-b - sqrt_delta) / (2*a)
+            
+            # 选择物理合理的正根
+            u_b_val = u1 if u1 > 0 else u2
+            if u_b_val <= 0:  # 确保粒子速度为正
+                return False
+                
+            # 计算D_b并验证
+            D_b_val = self.params['C0b'] + self.params['S_b'] * u_b_val
+            if D_b_val <= u_b_val - 1e-3:  # 冲击波速度必须大于粒子速度
+                return False
+                
+            self.params['u_b'] = u_b_val
+            self.params['D_b'] = D_b_val
+            return True
+        return False
     
     def eq1(self):
-        # 修正：u_f = w - D_f (飞片速度关系，实验室坐标系)
+        # 飞片速度关系: u_f = w - D_f (双向)
         if self.params['w'] is not None and self.params['D_f'] is not None and self.params['u_f'] is None:
             self.params['u_f'] = self.params['w'] - self.params['D_f']
             return True
@@ -928,18 +493,42 @@ class ShockWaveSolver:
         return False
     
     def eq2(self):
-        # D_f = C0f + S_f * u_f (Hugoniot关系)
+        # D_f = C0f + S_f * u_f (Hugoniot关系) - 双向
         if self.params['C0f'] is not None and self.params['S_f'] is not None \
            and self.params['u_f'] is not None and self.params['D_f'] is None:
             self.params['D_f'] = self.params['C0f'] + self.params['S_f'] * self.params['u_f']
             return True
+        # 已知D_f, C0f, u_f，求S_f
+        if self.params['D_f'] is not None and self.params['C0f'] is not None \
+           and self.params['u_f'] is not None and self.params['S_f'] is None \
+           and abs(self.params['u_f']) > 1e-6:  # 避免除以零
+            self.params['S_f'] = (self.params['D_f'] - self.params['C0f']) / self.params['u_f']
+            return True
+        # 已知D_f, S_f, u_f，求C0f
+        if self.params['D_f'] is not None and self.params['S_f'] is not None \
+           and self.params['u_f'] is not None and self.params['C0f'] is None:
+            self.params['C0f'] = self.params['D_f'] - self.params['S_f'] * self.params['u_f']
+            return True
         return False
     
     def eq3(self):
-        # p_f = rho0f * D_f * u_f (动量守恒)
+        # p_f = rho0f * D_f * u_f (动量守恒) - 双向
+        # 已知rho0f, D_f, u_f，求p_f
         if self.params['rho0f'] is not None and self.params['D_f'] is not None \
            and self.params['u_f'] is not None and self.params['p_f'] is None:
             self.params['p_f'] = self.params['rho0f'] * self.params['D_f'] * self.params['u_f']
+            return True
+        # 已知p_f, rho0f, D_f，求u_f
+        if self.params['p_f'] is not None and self.params['rho0f'] is not None \
+           and self.params['D_f'] is not None and self.params['u_f'] is None \
+           and abs(self.params['rho0f'] * self.params['D_f']) > 1e-6:  # 避免除以零
+            self.params['u_f'] = self.params['p_f'] / (self.params['rho0f'] * self.params['D_f'])
+            return True
+        # 已知p_f, rho0f, u_f，求D_f
+        if self.params['p_f'] is not None and self.params['rho0f'] is not None \
+           and self.params['u_f'] is not None and self.params['D_f'] is None \
+           and abs(self.params['rho0f'] * self.params['u_f']) > 1e-6:  # 避免除以零
+            self.params['D_f'] = self.params['p_f'] / (self.params['rho0f'] * self.params['u_f'])
             return True
         return False
     
@@ -947,7 +536,7 @@ class ShockWaveSolver:
         # rho_f = (rho0f * D_f) / (D_f - u_f) (质量守恒)
         if self.params['rho0f'] is not None and self.params['D_f'] is not None \
            and self.params['u_f'] is not None and self.params['rho_f'] is None \
-           and self.params['D_f'] != self.params['u_f']:
+           and abs(self.params['D_f'] - self.params['u_f']) > 1e-6:  # 避免除以零
             self.params['rho_f'] = (self.params['rho0f'] * self.params['D_f']) / (self.params['D_f'] - self.params['u_f'])
             return True
         return False
@@ -964,6 +553,7 @@ class ShockWaveSolver:
     
     def eq6(self):
         # 样品二次方程：rho0s*S_s*u_s² + rho0s*C0s*u_s - p_s = 0 (动量守恒)
+        # 已知rho0s, S_s, C0s, p_s，求u_s
         if self.params['rho0s'] is not None and self.params['S_s'] is not None \
            and self.params['C0s'] is not None and self.params['p_s'] is not None \
            and self.params['u_s'] is None:
@@ -979,13 +569,33 @@ class ShockWaveSolver:
             # 取正根（物理意义合理）
             self.params['u_s'] = u1 if u1 > 0 else u2
             return True
+        
+        # 已知u_s, rho0s, C0s, p_s，求S_s
+        if self.params['u_s'] is not None and self.params['rho0s'] is not None \
+           and self.params['C0s'] is not None and self.params['p_s'] is not None \
+           and self.params['S_s'] is None and abs(self.params['rho0s'] * self.params['u_s']**2) > 1e-6:
+            self.params['S_s'] = (self.params['p_s'] - self.params['rho0s'] * self.params['C0s'] * self.params['u_s']) / \
+                               (self.params['rho0s'] * self.params['u_s']**2)
+            return True
         return False
     
     def eq7(self):
-        # D_s = C0s + S_s * u_s (Hugoniot关系)
+        # D_s = C0s + S_s * u_s (Hugoniot关系) - 双向
+        # 已知C0s, S_s, u_s，求D_s
         if self.params['C0s'] is not None and self.params['S_s'] is not None \
            and self.params['u_s'] is not None and self.params['D_s'] is None:
             self.params['D_s'] = self.params['C0s'] + self.params['S_s'] * self.params['u_s']
+            return True
+        # 已知D_s, C0s, u_s，求S_s
+        if self.params['D_s'] is not None and self.params['C0s'] is not None \
+           and self.params['u_s'] is not None and self.params['S_s'] is None \
+           and abs(self.params['u_s']) > 1e-6:  # 避免除以零
+            self.params['S_s'] = (self.params['D_s'] - self.params['C0s']) / self.params['u_s']
+            return True
+        # 已知D_s, S_s, u_s，求C0s
+        if self.params['D_s'] is not None and self.params['S_s'] is not None \
+           and self.params['u_s'] is not None and self.params['C0s'] is None:
+            self.params['C0s'] = self.params['D_s'] - self.params['S_s'] * self.params['u_s']
             return True
         return False
     
@@ -993,7 +603,7 @@ class ShockWaveSolver:
         # rho_s = (rho0s * D_s) / (D_s - u_s) (质量守恒)
         if self.params['rho0s'] is not None and self.params['D_s'] is not None \
            and self.params['u_s'] is not None and self.params['rho_s'] is None \
-           and self.params['D_s'] != self.params['u_s']:
+           and abs(self.params['D_s'] - self.params['u_s']) > 1e-6:  # 避免除以零
             self.params['rho_s'] = (self.params['rho0s'] * self.params['D_s']) / (self.params['D_s'] - self.params['u_s'])
             return True
         return False
@@ -1010,6 +620,7 @@ class ShockWaveSolver:
     
     def eq10(self):
         # 基板二次方程：rho0b*S_b*u_b² + rho0b*C0b*u_b - p_b = 0 (动量守恒)
+        # 已知rho0b, S_b, C0b, p_b，求u_b
         if self.params['rho0b'] is not None and self.params['S_b'] is not None \
            and self.params['C0b'] is not None and self.params['p_b'] is not None \
            and self.params['u_b'] is None:
@@ -1025,13 +636,33 @@ class ShockWaveSolver:
             # 取正根（物理意义合理）
             self.params['u_b'] = u1 if u1 > 0 else u2
             return True
+        
+        # 已知u_b, rho0b, C0b, p_b，求S_b
+        if self.params['u_b'] is not None and self.params['rho0b'] is not None \
+           and self.params['C0b'] is not None and self.params['p_b'] is not None \
+           and self.params['S_b'] is None and abs(self.params['rho0b'] * self.params['u_b']**2) > 1e-6:
+            self.params['S_b'] = (self.params['p_b'] - self.params['rho0b'] * self.params['C0b'] * self.params['u_b']) / \
+                               (self.params['rho0b'] * self.params['u_b']**2)
+            return True
         return False
     
     def eq11(self):
-        # D_b = C0b + S_b * u_b (Hugoniot关系)
+        # D_b = C0b + S_b * u_b (Hugoniot关系) - 双向
+        # 已知C0b, S_b, u_b，求D_b
         if self.params['C0b'] is not None and self.params['S_b'] is not None \
            and self.params['u_b'] is not None and self.params['D_b'] is None:
             self.params['D_b'] = self.params['C0b'] + self.params['S_b'] * self.params['u_b']
+            return True
+        # 已知D_b, C0b, u_b，求S_b
+        if self.params['D_b'] is not None and self.params['C0b'] is not None \
+           and self.params['u_b'] is not None and self.params['S_b'] is None \
+           and abs(self.params['u_b']) > 1e-6:  # 避免除以零
+            self.params['S_b'] = (self.params['D_b'] - self.params['C0b']) / self.params['u_b']
+            return True
+        # 已知D_b, S_b, u_b，求C0b
+        if self.params['D_b'] is not None and self.params['S_b'] is not None \
+           and self.params['u_b'] is not None and self.params['C0b'] is None:
+            self.params['C0b'] = self.params['D_b'] - self.params['S_b'] * self.params['u_b']
             return True
         return False
     
@@ -1039,32 +670,62 @@ class ShockWaveSolver:
         # rho_b = (rho0b * D_b) / (D_b - u_b) (质量守恒)
         if self.params['rho0b'] is not None and self.params['D_b'] is not None \
            and self.params['u_b'] is not None and self.params['rho_b'] is None \
-           and self.params['D_b'] != self.params['u_b']:
+           and abs(self.params['D_b'] - self.params['u_b']) > 1e-6:  # 避免除以零
             self.params['rho_b'] = (self.params['rho0b'] * self.params['D_b']) / (self.params['D_b'] - self.params['u_b'])
             return True
         return False
     
     def solve(self):
-        """迭代求解所有可解参数"""
+        """迭代求解所有可解参数，支持联立方程求解"""
         changed = True
-        while changed:
+        iteration = 0
+        max_iterations = 200
+        tolerance = 1e-3
+        
+        # 跟踪连续迭代无变化的次数
+        no_change_count = 0
+        
+        while changed and iteration < max_iterations and no_change_count < 10:
             changed = False
-            for eq in self.equations:
+            iteration += 1
+            prev_params = self.params.copy()  # 保存当前状态用于比较
+            
+            # 优先处理联立方程求解
+            for pair in self.variable_pairs.values():
+                if pair['equation']():
+                    changed = True
+                    no_change_count = 0
+            
+            # 处理其他方程
+            for eq in self.equations[3:]:  # 跳过前3个，已经处理过联立求解
                 if eq():
-                    changed = True  # 有新参数被求解，需重新检查所有方程
+                    changed = True
+                    no_change_count = 0
                     
-                    # 检查物理合理性，如发现矛盾则返回None
-                    if self.params['D_f'] is not None and self.params['u_f'] is not None and self.params['D_f'] <= self.params['u_f']:
+                    # 检查物理合理性
+                    if self.params['D_f'] is not None and self.params['u_f'] is not None and self.params['D_f'] <= self.params['u_f'] - tolerance:
+                        print(f"物理矛盾: D_f ({self.params['D_f']}) <= u_f ({self.params['u_f']})")
                         return None
-                    if self.params['D_s'] is not None and self.params['u_s'] is not None and self.params['D_s'] <= self.params['u_s']:
+                    if self.params['D_s'] is not None and self.params['u_s'] is not None and self.params['D_s'] <= self.params['u_s'] - tolerance:
+                        print(f"物理矛盾: D_s ({self.params['D_s']}) <= u_s ({self.params['u_s']})")
                         return None
-                    if self.params['D_b'] is not None and self.params['u_b'] is not None and self.params['D_b'] <= self.params['u_b']:
+                    if self.params['D_b'] is not None and self.params['u_b'] is not None and self.params['D_b'] <= self.params['u_b'] - tolerance:
+                        print(f"物理矛盾: D_b ({self.params['D_b']}) <= u_b ({self.params['u_b']})")
                         return None
+            
+            # 检查参数是否有实质变化
+            if not changed:
+                no_change_count += 1
+        
+        # 检查是否达到最大迭代次数
+        if iteration >= max_iterations:
+            print(f"警告: 达到最大迭代次数 ({max_iterations})，可能未完全求解")
+            
         return self.params
 
-# 数值求解器（改进版本，更好地处理未知数）
+# 数值求解器
 def solve_numerically(eqs, sym_vars, initial_guess):
-    """使用数值方法求解方程组，增加物理约束检查"""
+    """使用数值方法求解方程组，包含物理约束检查"""
     var_list = list(sym_vars.values())
     
     def residuals(x):
@@ -1072,68 +733,64 @@ def solve_numerically(eqs, sym_vars, initial_guess):
         substitutions = {var_list[i]: x[i] for i in range(len(x))}
         residuals = []
         for eq in eqs:
-            # 替换变量
             substituted = eq.subs(substitutions)
-            # 检查是否为布尔值
             if substituted == True:
                 residuals.append(0.0)  # 等式成立，残差为0
             elif substituted == False:
                 residuals.append(1e10)  # 等式不成立，给予大残差
             else:
-                # 正常计算数值残差
                 try:
-                    # 简化表达式以提高计算稳定性
                     simplified = simplify(substituted)
                     residuals.append(float(abs(simplified.evalf())))
                 except:
                     residuals.append(1e10)  # 计算失败时给予大残差
         return residuals
     
-    # 根据初始猜测值的长度动态生成边界（放宽范围）
+    # 设置边界
     n_vars = len(initial_guess)
-    lower_bounds = [-1.0] * n_vars  # 允许微小的负值，提高数值稳定性
-    upper_bounds = [100.0] * n_vars  # 扩大上限
+    lower_bounds = [-1.0] * n_vars
+    upper_bounds = [100.0] * n_vars
     
-    # 根据变量类型调整特定变量的边界，更合理地符合物理规律
+    # 根据变量类型调整边界
     for i, var in enumerate(initial_guess.keys()):
         var_str = str(var)
         if var_str.startswith(('rh0', 'rh')):  # 密度
-            lower_bounds[i] = 0.01  # g/cm³，放宽下界
-            upper_bounds[i] = 50.0  # g/cm³，扩大上界
+            lower_bounds[i] = 0.01
+            upper_bounds[i] = 50.0
         elif var_str.startswith(('D', 'C0', 'u', 'w')):  # 速度
-            lower_bounds[i] = 0.01  # km/s，放宽下界
-            upper_bounds[i] = 100.0  # km/s，扩大上界
+            lower_bounds[i] = 0.01
+            upper_bounds[i] = 100.0
         elif var_str.startswith(('P', 'E')):  # 压力/能量
-            lower_bounds[i] = 0.001  # GPa，放宽下界
-            upper_bounds[i] = 10000.0  # GPa，扩大上界
+            lower_bounds[i] = 0.001
+            upper_bounds[i] = 10000.0
         elif var_str.startswith('gamma'):  # 格吕奈森系数
-            lower_bounds[i] = 0.1  # 放宽下界
-            upper_bounds[i] = 20.0  # 扩大上界
+            lower_bounds[i] = 0.1
+            upper_bounds[i] = 20.0
         elif var_str.startswith('T'):  # 温度
-            lower_bounds[i] = 100.0  # 放宽下界
-            upper_bounds[i] = 1e6  # K，扩大上界
+            lower_bounds[i] = 100.0
+            upper_bounds[i] = 1e6
     
-    # 执行最小二乘优化（调整参数提高收敛性）
+    # 执行最小二乘优化
     result = least_squares(
         residuals,
         list(initial_guess.values()),
         bounds=(lower_bounds, upper_bounds),
-        ftol=1e-6,  # 适当降低精度要求
+        ftol=1e-6,
         gtol=1e-6,
         xtol=1e-6,
-        max_nfev=10000,  # 大幅增加迭代次数
-        loss='soft_l1',  # 使用更稳健的损失函数
-        f_scale=0.1  # 调整损失函数的比例参数
+        max_nfev=10000,
+        loss='soft_l1',
+        f_scale=0.1
     )
     
     if result.success:
         solution = {str(var_list[i]): float(result.x[i]) for i in range(len(result.x))}
         
-        # 验证解的物理合理性（放宽容差）
+        # 验证解的物理合理性
         tolerance = 1e-3
         valid = True
         
-        # 检查冲击波速度大于粒子速度（允许微小误差）
+        # 检查冲击波速度大于粒子速度
         if 'Df' in solution and 'uf' in solution and solution['Df'] <= solution['uf'] - tolerance:
             valid = False
         if 'Db' in solution and 'ub' in solution and solution['Db'] <= solution['ub'] - tolerance:
@@ -1141,7 +798,7 @@ def solve_numerically(eqs, sym_vars, initial_guess):
         if 'Ds' in solution and 'us' in solution and solution['Ds'] <= solution['us'] - tolerance:
             valid = False
             
-        # 检查压缩密度大于初始密度（允许微小误差）
+        # 检查压缩密度大于初始密度
         if 'rh0f' in solution and 'rhf' in solution and solution['rhf'] <= solution['rh0f'] - tolerance:
             valid = False
         if 'rh0b' in solution and 'rhb' in solution and solution['rhb'] <= solution['rh0b'] - tolerance:
@@ -1149,7 +806,7 @@ def solve_numerically(eqs, sym_vars, initial_guess):
         if 'rh0s' in solution and 'rhs' in solution and solution['rhs'] <= solution['rh0s'] - tolerance:
             valid = False
             
-        # 检查压力为正数（允许微小误差）
+        # 检查压力为正数
         for p_var in ['Pf', 'Pb', 'Ps']:
             if p_var in solution and solution[p_var] <= -tolerance:
                 valid = False
@@ -1174,6 +831,104 @@ def solve_numerically(eqs, sym_vars, initial_guess):
             
         return solution
     return None
+
+def test_with_partial_params(known_params):
+    """
+    测试在部分参数已知的情况下求解器的表现
+    known_params: 字典，包含已知参数及其值
+    """
+    print("\n=== 测试部分参数已知的情况 ===")
+    print("已知参数:")
+    for key, value in known_params.items():
+        print(f"  {key}: {value}")
+    
+    try:
+        solver = ShockWaveSolver()
+        solver.set_known_params(known_params)
+        result = solver.solve()
+        
+        if not result:
+            print("求解失败，未得到任何结果")
+            return
+        
+        # 分类参数：已知、求解成功、仍未知
+        known = [k for k in known_params.keys() if k in result]
+        solved = [k for k, v in result.items() if v is not None and k not in known]
+        unknown = [k for k, v in result.items() if v is None]
+        
+        print("\n求解结果分析:")
+        print(f"  已知参数: {len(known)}个")
+        print(f"  成功求解: {len(solved)}个")
+        print(f"  仍未知: {len(unknown)}个")
+        
+        if solved:
+            print("\n求解得到的参数:")
+            for key in solved:
+                print(f"  {key}: {result[key]:.4f}")
+        
+        if unknown:
+            print("\n未能求解的参数:")
+            print(f"  {', '.join(unknown)}")
+            
+            # 提供参数建议
+            suggestions = solver.suggest_missing_params()
+            if suggestions:
+                print("\n可能的缺失参数建议:")
+                for param, possible in suggestions.items():
+                    print(f"  {param}: {possible}")
+        
+        # 检查物理合理性
+        print("\n物理合理性检查:")
+        valid = True
+        tolerance = 1e-3
+        
+        # 检查冲击波速度 > 粒子速度
+        for param_pair in [('D_f', 'u_f'), ('D_s', 'u_s'), ('D_b', 'u_b')]:
+            D, u = param_pair
+            if D in solved and u in solved:
+                if result[D] <= result[u] - tolerance:
+                    print(f"  不合理: {D} ({result[D]:.4f}) <= {u} ({result[u]:.4f})")
+                    valid = False
+                else:
+                    print(f"  合理: {D} ({result[D]:.4f}) > {u} ({result[u]:.4f})")
+        
+        # 检查压力为正
+        for p in ['p_f', 'p_s', 'p_b']:
+            if p in solved:
+                if result[p] <= -tolerance:
+                    print(f"  不合理: {p} ({result[p]:.4f}) 为非正数")
+                    valid = False
+                else:
+                    print(f"  合理: {p} 为正数")
+        
+        if valid:
+            print("\n所有已求解参数满足物理合理性约束")
+    
+    except Exception as e:
+        print(f"测试失败: {str(e)}")
+
+def test_core_functions():
+    print("测试冲击波参数计算...")
+    try:
+        # 测试正常情况
+        P, V, rho, V_V0, T = calculate_shock_parameters(U_s=5.0, u_p=1.0, rho0=8.96)
+        print(f"计算结果 - P: {P:.2f} GPa, rho: {rho:.2f} g/cm³, V/V0: {V_V0:.2f}")
+        
+        # 测试物理约束违反情况
+        try:
+            calculate_shock_parameters(U_s=1.0, u_p=2.0, rho0=8.96)  # Us < Up
+            print("错误: 未检测到冲击波速度小于粒子速度的情况")
+        except ValueError as e:
+            print(f"正确检测到错误: {str(e)}")
+            
+        try:
+            calculate_shock_parameters(U_s=5.0, u_p=1.0, rho0=-0.1)  # 密度为负
+            print("错误: 未检测到密度为负的情况")
+        except ValueError as e:
+            print(f"正确检测到错误: {str(e)}")
+            
+    except Exception as e:
+        print(f"冲击波参数计算测试失败: {str(e)}")
 
 # 冲击波关系图绘制 - 使用英文标签，根据实验方法区分颜色
 @st.cache_data(ttl=3600)  # 缓存图像结果
@@ -1730,7 +1485,7 @@ def database_mode_page():
         valid = True
         # 检查关键参数是否已输入 - 使用Symbol类进行类型检查
         for var in ['rh0f', 'rh0b', 'rh0s']:
-            if isinstance(input_params.get(var), Symbol):
+            if isinstance(input_params.get(var), symbols(var).__class__):
                 valid = False
                 st.error(f"{var}（初始密度）是必填参数，请输入值")
         
@@ -2180,18 +1935,21 @@ def manual_mode_page():
                 )
                 input_params[var] = val
                 sym_vars[var] = symbols(var)
-
-    # 保存当前参数按钮
+    
+    # 固定显示保存当前参数按钮
     col_save, col_other = st.columns([1, 3])
     with col_save:
         if st.button("保存当前参数到数据库"):
-            # 整合材料信息
-            save_data = input_params.copy()
-            save_data['material'] = sample_material
-            count = save_input_parameters(save_data, sample_material, "manual_input")
+            # 整合材料信息到参数中
+            params_with_materials = input_params.copy()
+            params_with_materials['flyer_material'] = flyer_material
+            params_with_materials['base_material'] = base_material
+            params_with_materials['sample_material'] = sample_material
+            
+            count = save_input_parameters(params_with_materials, sample_material, "manual_mode_input")
             if count > 0:
                 st.success(f"已保存到 {sample_material} 数据集，共 {count} 条记录")
-
+    
     # 参数组合限制
     range_params = {k: v for k, v in input_params.items() if isinstance(v, list)}
     total_combinations = 1
@@ -2204,15 +1962,12 @@ def manual_mode_page():
         max_value=1000, 
         value=min(100, total_combinations)
     )
-
+    
     if st.button("开始求解"):
-        import itertools
-        from sympy import Symbol
-
         valid = True
         # 检查关键参数是否已输入
         for var in ['rh0f', 'rh0b', 'rh0s']:
-            if isinstance(input_params.get(var), Symbol):
+            if isinstance(input_params.get(var), symbols(var).__class__):
                 valid = False
                 st.error(f"{var}（初始密度）是必填参数，请输入值")
         
@@ -2223,7 +1978,7 @@ def manual_mode_page():
                 st.error(f"{var} 输入无效，请检查")
         
         if not valid:
-            st.stop()
+            return
             
         # 生成参数组合
         combinations = itertools.product(*[[(k, val) for val in v] for k, v in range_params.items()])
@@ -2242,17 +1997,17 @@ def manual_mode_page():
         
         for combo in combinations:
             count += 1
-            # 更新进度条
+            # 每10次更新一次进度条以减少UI开销
             if count % 10 == 0 or count == total:
                 progress_bar.progress(count / total)
                 
             current_subs = {sym_vars[k]: v for k, v in combo}
             
-            # 构建方程组
+            # 方程组 - 使用修正后的飞片速度方程
             eqs = [
                 # 飞片质量守恒: rho0f·Df = rhf·(Df - uf)
                 Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
-                # 飞片速度关系: w = Df + uf
+                # 修正：飞片速度与粒子速度关系 (实验室坐标系): w = Df + uf
                 Eq(sym_vars['w'] - (sym_vars['Df'] + sym_vars['uf']), 0),
                 # 基板质量守恒: rho0b·Db = rhb·(Db - ub)
                 Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
@@ -2260,9 +2015,9 @@ def manual_mode_page():
                 Eq(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*sym_vars['uf'], 0),
                 # 基板动量守恒: Pb = rho0b·Db·ub
                 Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*sym_vars['ub'], 0),
-                # 飞片能量守恒
+                # 飞片能量守恒: Ef = E0f + 0.5·Pf·(1/rho0f - 1/rhf)
                 Eq(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
-                # 基板能量守恒
+                # 基板能量守恒: Eb = E0b + 0.5·Pb·(1/rho0b - 1/rhb)
                 Eq(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
                 # 飞片Hugoniot关系: Df = C0f + Sf·uf
                 Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*sym_vars['uf'], 0),
@@ -2274,7 +2029,7 @@ def manual_mode_page():
                 Eq(sym_vars['uf'] - sym_vars['ub'], 0)
             ]
             
-            # 添加温度相关方程
+            # 温度相关方程（仅当计算温度时添加）
             if calculate_temp:
                 # 飞片温度方程 (Mie-Grüneisen)
                 eqs.append(Eq(sym_vars['Tf'] - 300 - (sym_vars['Ef'] - sym_vars['E0f'])*1e6 / 
@@ -2283,13 +2038,13 @@ def manual_mode_page():
                 eqs.append(Eq(sym_vars['Tb'] - 300 - (sym_vars['Eb'] - sym_vars['E0b'])*1e6 / 
                              (Cv_values['b'] * (1 + sym_vars['gammab']/2)), 0))
             
-            # 判断样品与基板是否为同一材料
             try:
-                is_same_material = (sample_material == base_material)
+                # 检查样品和基板是否为同一材料
+                cond = (flyer_material == base_material == sample_material)
             except:
-                is_same_material = False
+                cond = False
                 
-            if is_same_material:
+            if cond:
                 # 样品与基板为同一材料：参数与基板一致
                 eqs += [
                     Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),  # 压力连续性
@@ -2300,7 +2055,7 @@ def manual_mode_page():
                     Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0)
                 ]
                 
-                # 温度相关方程
+                # 温度相关方程（仅当计算温度时添加）
                 if calculate_temp:
                     eqs += [
                         Eq(sym_vars['Tb'] - sym_vars['Ts'], 0),
@@ -2325,12 +2080,11 @@ def manual_mode_page():
                     Eq(sym_vars['ub'] - sym_vars['us'], 0)   # 速度连续性
                 ]
                 
-                # 温度相关方程
+                # 温度相关方程（仅当计算温度时添加）
                 if calculate_temp:
                     eqs.append(Eq(sym_vars['Ts'] - 300 - (sym_vars['Es'] - sym_vars['E0s'])*1e6 / 
                                  (Cv_values['s'] * (1 + sym_vars['gammas']/2)), 0))
             
-            # 代入已知参数
             substituted_eqs = [eq.subs(current_subs) for eq in eqs]
             remaining_vars = list(set().union(*[eq.free_symbols for eq in substituted_eqs]))
             
@@ -2340,6 +2094,7 @@ def manual_mode_page():
             try:
                 # 构建初始猜测值
                 initial_guess = {}
+                # 提取已知参数值
                 known_params = {}
                 for k, v in current_subs.items():
                     try:
@@ -2349,27 +2104,37 @@ def manual_mode_page():
                 
                 for var in remaining_vars:
                     var_str = str(var)
-                    # 基于物理规律设置智能初始猜测
+                    # 基于已知参数动态设置初始猜测值
                     if var_str == 'w' and 'Df' in known_params and 'uf' in known_params:
                         initial_guess[var] = known_params['Df'] + known_params['uf']
-                    elif var_str == 'Df' and 'C0f' in known_params and 'uf' in known_params:
-                        initial_guess[var] = known_params['C0f'] + 1.5 * known_params['uf']
+                    elif var_str == 'Df' and 'w' in known_params and 'uf' in known_params:
+                        initial_guess[var] = known_params['w'] - known_params['uf']
+                    elif var_str == 'uf' and 'w' in known_params and 'Df' in known_params:
+                        initial_guess[var] = known_params['w'] - known_params['Df']
                     elif var_str == 'Pf' and 'rh0f' in known_params and 'Df' in known_params and 'uf' in known_params:
                         initial_guess[var] = known_params['rh0f'] * known_params['Df'] * known_params['uf']
-                    elif var_str.startswith('rh'):  # 密度
-                        initial_guess[var] = known_params.get('rh0f', 8.0) * 1.2  # 压缩后密度略大
-                    elif var_str.startswith(('D', 'u', 'w')):  # 速度
-                        initial_guess[var] = known_params.get('w', 10.0) * 0.6
+                    elif var_str.startswith(('rh0', 'rh')):  # 密度
+                        initial_guess[var] = known_params.get('rh0f', 8.0)
+                    elif var_str.startswith(('D', 'C0', 'u')):  # 速度
+                        if 'w' in known_params:
+                            initial_guess[var] = known_params['w'] / 2
+                        else:
+                            initial_guess[var] = 5.0
+                    elif var_str == 'w':  # 飞片速度
+                        initial_guess[var] = 10.0
                     elif var_str.startswith('P'):  # 压力
-                        initial_guess[var] = known_params.get('Pf', 100.0)
+                        if 'rh0f' in known_params and 'w' in known_params:
+                            initial_guess[var] = known_params['rh0f'] * (known_params['w']/2) * (known_params['w']/2)
+                        else:
+                            initial_guess[var] = 100.0
                     elif var_str.startswith('gamma'):  # 格吕奈森系数
                         initial_guess[var] = 2.0
                     elif var_str.startswith('T'):  # 温度
                         initial_guess[var] = 3000.0
-                    else:
+                    else:  # 其他参数
                         initial_guess[var] = 1.0
                 
-                # 数值求解
+                # 使用数值方法求解
                 solution = solve_numerically(substituted_eqs, {v:v for v in remaining_vars}, initial_guess)
                 
                 if solution:
@@ -2387,79 +2152,72 @@ def manual_mode_page():
                 else:
                     invalid_solutions += 1
             except Exception as e:
-                st.warning(f"求解错误: {str(e)}")
+                st.warning(f"求解错误: {str(e)}（可能由高压下的非线性效应引起，请检查参数范围）")
                 invalid_solutions += 1
         
-        # 处理求解结果
         if results:
             st.success(f"求解完成，找到 {len(results)} 个符合物理规律的解（已过滤 {invalid_solutions} 个不合理解）")
             
             st.subheader("结果数据（单位：rho=g/cm³, D=km/s, u=km/s, P=GPa, T=K）")
             df = pd.DataFrame(results)
-            # 选择常用列优先显示
-            cols_to_show = ['w', 'Df', 'uf', 'Pf', 'rhf', 'Db', 'ub', 'Pb', 'rhb']
-            if calculate_temp:
-                cols_to_show += ['Tf', 'Tb']
-            # 确保只显示存在的列
-            cols_to_show = [col for col in cols_to_show if col in df.columns]
-            st.dataframe(df[cols_to_show])
+            st.dataframe(df)
             
-            # 下载结果
             csv = df.to_csv(index=False)
             st.download_button(
                 label="下载结果数据",
                 data=csv,
-                file_name="manual_solver_results.csv",
+                file_name="manual_mode_solver_results.csv",
                 mime="text/csv",
             )
             
-            # 结果可视化
             st.subheader("结果可视化")
             fig = plot_results_streamlit(results, calculate_temp)
             if fig:
                 st.pyplot(fig)
-                buf = BytesIO()
-                fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
-                buf.seek(0)
+                buf2 = BytesIO()
+                fig.savefig(buf2, format='png', dpi=150, bbox_inches='tight')
+                buf2.seek(0)
                 st.download_button(
                     label="下载图表",
-                    data=buf,
-                    file_name="manual_analysis_results.png",
+                    data=buf2,
+                    file_name="manual_analysis_with_temp.png" if calculate_temp else "manual_analysis_results.png",
                     mime="image/png"
                 )
             
-            # 保存结果到数据库
             if st.button("保存结果到数据库"):
                 count = save_results_to_db(results, sample_material)
                 if count > 0:
                     st.success(f"已保存到 {sample_material} 数据集，共 {count} 条记录")
         else:
             st.warning(f"未找到有效解，尝试了 {total} 组参数，均不符合物理规律或求解失败")
-            st.info("建议：\n1. 检查输入参数是否在合理范围内\n2. 确保初始密度为正数\n3. 冲击波速度应大于粒子速度\n4. 减少未知数数量")
-
-    # 返回主页按钮
+            st.info("尝试以下解决方案：\n1. 检查输入参数是否在合理范围内\n2. 减少未知数数量，输入更多已知参数\n3. 放宽物理约束条件\n4. 调整参数范围，避免极端值")
+    
     if st.button("返回主页"):
         st.session_state.page = "home"
         st.rerun()
 
-# 主程序入口
+# 主函数
 def main():
     # 初始化会话状态
     if 'page' not in st.session_state:
         st.session_state.page = "home"
     if 'confirm_delete' not in st.session_state:
         st.session_state.confirm_delete = False
-    if 'confirm_clear' not in st.session_state:
-        st.session_state.confirm_clear = False
     if 'previous_page' not in st.session_state:
-        st.session_state.previous_page = "home"
+        st.session_state.previous_page = None
     
-    # 初始化数据库连接
+    # 初始化数据库引擎
     global db_engine
-    if db_engine is None:
-        db_engine = create_db_engine(DB_TYPE)
+    db_engine = create_db_engine(DB_TYPE)
     
-    # 页面路由
+    # 设置页面配置
+    st.set_page_config(
+        page_title="冲击波参数计算与分析系统",
+        page_icon="⚡",
+        layout="wide"
+    )
+    
+    # 页面导航
     if st.session_state.page == "home":
         home_page()
     elif st.session_state.page == "database_mode":
@@ -2469,9 +2227,17 @@ def main():
     elif st.session_state.page == "view_database":
         view_database()
         # 返回按钮
-        if st.button("返回上一页"):
-            st.session_state.page = st.session_state.previous_page
-            st.rerun()
+        col_back, _ = st.columns([1, 5])
+        with col_back:
+            if st.button("返回"):
+                if st.session_state.previous_page:
+                    st.session_state.page = st.session_state.previous_page
+                else:
+                    st.session_state.page = "home"
+                st.rerun()
 
 if __name__ == "__main__":
+    # 运行测试
+    # test_core_functions()
+    # test_with_partial_params({'w': 5.0, 'C0f': 3.94, 'Sf': 1.48, 'rh0f': 8.96})
     main()
