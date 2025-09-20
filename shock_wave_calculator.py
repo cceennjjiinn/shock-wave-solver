@@ -1281,7 +1281,7 @@ def plot_results_streamlit(results, calculate_temp=True):
     # 添加初始密度参考线
     if results and 'rh0f' in results[0]:
         avg_rh0 = np.mean([r.get('rh0f', 0) for r in results])
-        ax4.axhline(y=avg_rh0, color='k', linestyle='--', label=f'平均初始密度: {avg_rh0:.2f}')
+        ax4.axhline(y=avg_rh0, color='k', linestyle='--', label=f'{avg_rh0:.2f}')
     ax4.set_xlabel(' P (GPa)')
     ax4.set_ylabel('rh (g/cm³)')
     ax4.set_title('rh - P')
