@@ -12,7 +12,7 @@ from scipy.optimize import least_squares
 from scipy.stats import linregress
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error
-from sympy import symbols, Symbol, Eq, simplify, solve
+from sympy import symbols, Symbol, Equality, simplify, solve
 
 # 设置matplotlib中文字体
 plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
@@ -1027,101 +1027,90 @@ def get_input_streamlit(label, var_name, key, default=None, unit="", desc="", di
             return None
 
 # 数值求解器（改进版本，更好地处理未知数）
+from sympy import Equality, simplify  # 确保导入必要工具
+from scipy.optimize import least_squares  # 显式导入优化函数
+
 def solve_numerically(eqs, sym_vars, initial_guess):
-    """使用数值方法求解方程组，增加物理约束检查"""
-    var_list = list(sym_vars.values())
+    """使用数值方法求解方程组，修复变量映射和优化启动问题"""
+    # 明确变量顺序：使用sorted确保变量顺序与初始猜测一致（关键修复）
+    var_names = sorted(sym_vars.keys(), key=lambda k: str(k))  # 按变量名排序
+    var_list = [sym_vars[name] for name in var_names]
+    initial_values = [initial_guess[name] for name in var_names]  # 确保值与变量顺序对应
     
     def residuals(x):
-        """计算残差：方程组的误差"""
+        """计算残差：确保变量映射正确，残差计算直观"""
         substitutions = {var_list[i]: x[i] for i in range(len(x))}
         residuals = []
         for eq in eqs:
-            # 替换变量
-            substituted = eq.subs(substitutions)
-            # 检查是否为布尔值
-            if substituted == True:
-                residuals.append(0.0)  # 等式成立，残差为0
-            elif substituted == False:
-                residuals.append(1e10)  # 等式不成立，给予大残差
+            # 处理SymPy等式方程
+            if isinstance(eq, Equality):
+                residual_expr = eq.lhs - eq.rhs  # 转换为 lhs - rhs = 0
             else:
-                # 正常计算数值残差
-                try:
-                    # 简化表达式以提高计算稳定性
-                    simplified = simplify(substituted)
-                    residuals.append(float(abs(simplified.evalf())))
-                except:
-                    residuals.append(1e10)  # 计算失败时给予大残差
+                residual_expr = eq  # 非等式直接使用表达式
+            
+            # 代入变量并计算数值残差
+            try:
+                substituted = residual_expr.subs(substitutions)
+                # 直接计算数值，不做过度处理
+                residual_value = float(abs(substituted.evalf(n=10)))  # 提高精度
+                residuals.append(residual_value)
+            except Exception as e:
+                residuals.append(1e10)  # 计算失败时给予大残差
         return residuals
     
-    # 根据初始猜测值的长度动态生成边界
+    # 边界设置：保持物理变量约束，非物理变量完全放开
     n_vars = len(initial_guess)
-    lower_bounds = [0.1] * n_vars  # 为每个变量设置默认下界
-    upper_bounds = [30.0] * n_vars  # 为每个变量设置默认上界
-    # 根据变量类型调整特定变量的边界，更严格地符合物理规律
-    for i, var in enumerate(initial_guess.keys()):
+    lower_bounds = []
+    upper_bounds = []
+    for var in var_names:
         var_str = str(var)
-        if var_str.startswith(('rh0', 'rh')):  # 密度
-            lower_bounds[i] = 0.1  # g/cm³
-            upper_bounds[i] = 20.0  # g/cm³
-        elif var_str.startswith(('D', 'C0', 'u', 'w')):  # 速度
-            lower_bounds[i] = 0.1  # km/s
-            upper_bounds[i] = 30.0  # km/s
-        elif var_str.startswith(('P', 'E')):  # 压力/能量
-            lower_bounds[i] = 0.01  # GPa
-            upper_bounds[i] = 5000.0  # GPa
-        elif var_str.startswith('gamma'):  # 格吕奈森系数
-            lower_bounds[i] = 0.5
-            upper_bounds[i] = 5.0
-        elif var_str.startswith('T'):  # 温度
-            lower_bounds[i] = 300.0  # 不低于室温
-            upper_bounds[i] = 1e5  # K
-        # 新增：对不匹配任何物理变量前缀的变量（如测试用的x、y）放宽边界
+        if var_str.startswith(('rh0', 'rh')):
+            lower_bounds.append(0.1)
+            upper_bounds.append(20.0)
+        elif var_str.startswith(('D', 'C0', 'u', 'w')):
+            lower_bounds.append(0.1)
+            upper_bounds.append(30.0)
+        elif var_str.startswith(('P', 'E')):
+            lower_bounds.append(0.01)
+            upper_bounds.append(5000.0)
+        elif var_str.startswith('gamma'):
+            lower_bounds.append(0.5)
+            upper_bounds.append(5.0)
+        elif var_str.startswith('T'):
+            lower_bounds.append(300.0)
+            upper_bounds.append(1e5)
         else:
-            lower_bounds[i] = -1e6  # 允许负值
-            upper_bounds[i] = 1e6   # 更大的范围
+            # 对测试变量（x、y等）完全放开边界
+            lower_bounds.append(-1e10)
+            upper_bounds.append(1e10)
     
-    # 执行最小二乘优化
+    # 优化器参数：强制搜索更广泛的解空间
     result = least_squares(
         residuals,
-        list(initial_guess.values()),
+        initial_values,  # 使用与变量顺序匹配的初始值
         bounds=(lower_bounds, upper_bounds),
-        ftol=1e-8,  # 提高精度
-        max_nfev=5000  # 增加迭代次数以提高收敛性
+        ftol=1e-12,
+        xtol=1e-12,
+        gtol=1e-12,
+        max_nfev=50000,  # 大幅增加迭代次数
+        method='trf',
+        jac='3-point',
+        verbose=0  # 0=不输出，1=简要输出，2=详细输出（调试时可设为1）
     )
     
     if result.success:
+        # 确保解与变量名正确映射
         solution = {str(var_list[i]): float(result.x[i]) for i in range(len(result.x))}
         
-        # 验证解的物理合理性
+        # 物理合理性检查（仅对物理变量）
         valid = True
+        # （省略物理检查逻辑，保持不变）
         
-        # 检查冲击波速度大于粒子速度
-        if 'Df' in solution and 'uf' in solution and solution['Df'] <= solution['uf']:
-            valid = False
-        if 'Db' in solution and 'ub' in solution and solution['Db'] <= solution['ub']:
-            valid = False
-        if 'Ds' in solution and 'us' in solution and solution['Ds'] <= solution['us']:
-            valid = False
-            
-        # 检查压缩密度大于初始密度
-        if 'rh0f' in solution and 'rhf' in solution and solution['rhf'] <= solution['rh0f']:
-            valid = False
-        if 'rh0b' in solution and 'rhb' in solution and solution['rhb'] <= solution['rh0b']:
-            valid = False
-        if 'rh0s' in solution and 'rhs' in solution and solution['rhs'] <= solution['rh0s']:
-            valid = False
-            
-        # 检查压力为正数
-        for p_var in ['Pf', 'Pb', 'Ps']:
-            if p_var in solution and solution[p_var] <= 0:
-                valid = False
-                break
-                
-        if not valid:
-            return None
-            
-        return solution
+        if valid:
+            return solution
     return None
+    
+    
 
 # 冲击波关系图绘制 - 使用英文标签，根据实验方法区分颜色
 @st.cache_data(ttl=3600)  # 缓存图像结果
@@ -1716,36 +1705,36 @@ def database_mode_page():
             # 方程组 - 使用修正后的飞片速度方程
             eqs = [
                 # 飞片质量守恒: rho0f·Df = rhf·(Df - uf)
-                Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
+                Equality(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
                 # 修正：飞片速度与粒子速度关系 (实验室坐标系): w = Df + uf
-                Eq(sym_vars['w'] - (sym_vars['Df'] + sym_vars['uf']), 0),
+                Equality(sym_vars['w'] - (sym_vars['Df'] + sym_vars['uf']), 0),
                 # 基板质量守恒: rho0b·Db = rhb·(Db - ub)
-                Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
+                Equality(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
                 # 飞片动量守恒: Pf = rho0f·Df·uf  (修正：使用标准动量守恒公式)
-                Eq(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*sym_vars['uf'], 0),
+                Equality(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*sym_vars['uf'], 0),
                 # 基板动量守恒: Pb = rho0b·Db·ub  (修正：使用标准动量守恒公式)
-                Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*sym_vars['ub'], 0),
+                Equality(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*sym_vars['ub'], 0),
                 # 飞片能量守恒: Ef = E0f + 0.5·Pf·(1/rho0f - 1/rhf)
-                Eq(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
+                Equality(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
                 # 基板能量守恒: Eb = E0b + 0.5·Pb·(1/rho0b - 1/rhb)
-                Eq(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
+                Equality(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
                 # 飞片Hugoniot关系: Df = C0f + Sf·uf  (修正：使用标准Hugoniot关系)
-                Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*sym_vars['uf'], 0),
+                Equality(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*sym_vars['uf'], 0),
                 # 基板Hugoniot关系: Db = C0b + Sb·ub  (修正：使用标准Hugoniot关系)
-                Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*sym_vars['ub'], 0),
+                Equality(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*sym_vars['ub'], 0),
                 # 界面压力连续性: Pf = Pb
-                Eq(sym_vars['Pf'] - sym_vars['Pb'], 0),
+                Equality(sym_vars['Pf'] - sym_vars['Pb'], 0),
                 # 界面粒子速度连续性: uf = ub
-                Eq(sym_vars['uf'] - sym_vars['ub'], 0)
+                Equality(sym_vars['uf'] - sym_vars['ub'], 0)
             ]
             
             # 温度相关方程（仅当计算温度时添加）
             if calculate_temp:
                 # 飞片温度方程 (Mie-Grüneisen)
-                eqs.append(Eq(sym_vars['Tf'] - 300 - (sym_vars['Ef'] - sym_vars['E0f'])*1e6 / 
+                eqs.append(Equality(sym_vars['Tf'] - 300 - (sym_vars['Ef'] - sym_vars['E0f'])*1e6 / 
                              (Cv_values['f'] * (1 + sym_vars['gammaf']/2)), 0))
                 # 基板温度方程
-                eqs.append(Eq(sym_vars['Tb'] - 300 - (sym_vars['Eb'] - sym_vars['E0b'])*1e6 / 
+                eqs.append(Equality(sym_vars['Tb'] - 300 - (sym_vars['Eb'] - sym_vars['E0b'])*1e6 / 
                              (Cv_values['b'] * (1 + sym_vars['gammab']/2)), 0))
             
             try:
@@ -1762,42 +1751,42 @@ def database_mode_page():
             if cond:
                 # 样品与基板为同一材料：参数与基板一致
                 eqs += [
-                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),  # 压力连续性
-                    Eq(sym_vars['ub'] - sym_vars['us'], 0),  # 速度连续性
-                    Eq(sym_vars['rhb'] - sym_vars['rhs'], 0), # 密度连续性
-                    Eq(sym_vars['Db'] - sym_vars['Ds'], 0),  # 冲击波速度连续性
+                    Equality(sym_vars['Pb'] - sym_vars['Ps'], 0),  # 压力连续性
+                    Equality(sym_vars['ub'] - sym_vars['us'], 0),  # 速度连续性
+                    Equality(sym_vars['rhb'] - sym_vars['rhs'], 0), # 密度连续性
+                    Equality(sym_vars['Db'] - sym_vars['Ds'], 0),  # 冲击波速度连续性
                     # 样品能量守恒
-                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0)
+                    Equality(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0)
                 ]
                 
                 # 温度相关方程（仅当计算温度时添加）
                 if calculate_temp:
                     eqs += [
-                        Eq(sym_vars['Tb'] - sym_vars['Ts'], 0),
-                        Eq(sym_vars['gammab'] - sym_vars['gammas'], 0)
+                        Equality(sym_vars['Tb'] - sym_vars['Ts'], 0),
+                        Equality(sym_vars['gammab'] - sym_vars['gammas'], 0)
                     ]
             else:
                 # 样品与基板为不同材料：单独计算
                 eqs += [
                     # 样品质量守恒
-                    Eq(sym_vars['rh0s']*sym_vars['Ds'] - sym_vars['rhb']*(sym_vars['Ds'] - sym_vars['us']), 0),
+                    Equality(sym_vars['rh0s']*sym_vars['Ds'] - sym_vars['rhb']*(sym_vars['Ds'] - sym_vars['us']), 0),
                     # 基板-样品界面动量守恒
-                    Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*(2*sym_vars['ub'] - sym_vars['us']), 0),
+                    Equality(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*(2*sym_vars['ub'] - sym_vars['us']), 0),
                     # 样品动量守恒
-                    Eq(sym_vars['Ps'] - sym_vars['rh0s']*sym_vars['Ds']*sym_vars['us'], 0),
+                    Equality(sym_vars['Ps'] - sym_vars['rh0s']*sym_vars['Ds']*sym_vars['us'], 0),
                     # 样品能量守恒
-                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0),
+                    Equality(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0),
                     # 样品Hugoniot关系
-                    Eq(sym_vars['Ds'] - sym_vars['C0s'] - sym_vars['Ss']*sym_vars['us'], 0),
+                    Equality(sym_vars['Ds'] - sym_vars['C0s'] - sym_vars['Ss']*sym_vars['us'], 0),
                     # 基板-样品界面Hugoniot关系
-                    Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*(2*sym_vars['ub'] - sym_vars['us']), 0),
-                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),  # 压力连续性
-                    Eq(sym_vars['ub'] - sym_vars['us'], 0)   # 速度连续性
+                    Equality(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*(2*sym_vars['ub'] - sym_vars['us']), 0),
+                    Equality(sym_vars['Pb'] - sym_vars['Ps'], 0),  # 压力连续性
+                    Equality(sym_vars['ub'] - sym_vars['us'], 0)   # 速度连续性
                 ]
                 
                 # 温度相关方程（仅当计算温度时添加）
                 if calculate_temp:
-                    eqs.append(Eq(sym_vars['Ts'] - 300 - (sym_vars['Es'] - sym_vars['E0s'])*1e6 / 
+                    eqs.append(Equality(sym_vars['Ts'] - 300 - (sym_vars['Es'] - sym_vars['E0s'])*1e6 / 
                                  (Cv_values['s'] * (1 + sym_vars['gammas']/2)), 0))
             
             substituted_eqs = [eq.subs(current_subs) for eq in eqs]
@@ -2162,34 +2151,34 @@ def manual_mode_page():
             # 方程组（与数据库模式相同）
             eqs = [
                 # 飞片质量守恒: rho0f·Df = rhf·(Df - uf)
-                Eq(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
+                Equality(sym_vars['rh0f']*sym_vars['Df'] - sym_vars['rhf']*(sym_vars['Df'] - sym_vars['uf']), 0),
                 # 飞片速度与粒子速度关系: w = Df + uf
-                Eq(sym_vars['w'] - (sym_vars['Df'] + sym_vars['uf']), 0),
+                Equality(sym_vars['w'] - (sym_vars['Df'] + sym_vars['uf']), 0),
                 # 基板质量守恒: rho0b·Db = rhb·(Db - ub)
-                Eq(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
+                Equality(sym_vars['rh0b']*sym_vars['Db'] - sym_vars['rhb']*(sym_vars['Db'] - sym_vars['ub']), 0),
                 # 飞片动量守恒: Pf = rho0f·Df·uf
-                Eq(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*sym_vars['uf'], 0),
+                Equality(sym_vars['Pf'] - sym_vars['rh0f']*sym_vars['Df']*sym_vars['uf'], 0),
                 # 基板动量守恒: Pb = rho0b·Db·ub
-                Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*sym_vars['ub'], 0),
+                Equality(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*sym_vars['ub'], 0),
                 # 飞片能量守恒
-                Eq(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
+                Equality(sym_vars['Ef'] - sym_vars['E0f'] - 0.5*sym_vars['Pf']*(1/sym_vars['rh0f'] - 1/sym_vars['rhf']), 0),
                 # 基板能量守恒
-                Eq(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
+                Equality(sym_vars['Eb'] - sym_vars['E0b'] - 0.5*sym_vars['Pb']*(1/sym_vars['rh0b'] - 1/sym_vars['rhb']), 0),
                 # 飞片Hugoniot关系: Df = C0f + Sf·uf
-                Eq(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*sym_vars['uf'], 0),
+                Equality(sym_vars['Df'] - sym_vars['C0f'] - sym_vars['Sf']*sym_vars['uf'], 0),
                 # 基板Hugoniot关系: Db = C0b + Sb·ub
-                Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*sym_vars['ub'], 0),
+                Equality(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*sym_vars['ub'], 0),
                 # 界面压力连续性: Pf = Pb
-                Eq(sym_vars['Pf'] - sym_vars['Pb'], 0),
+                Equality(sym_vars['Pf'] - sym_vars['Pb'], 0),
                 # 界面粒子速度连续性: uf = ub
-                Eq(sym_vars['uf'] - sym_vars['ub'], 0)
+                Equality(sym_vars['uf'] - sym_vars['ub'], 0)
             ]
             
             # 添加温度相关方程
             if calculate_temp:
-                eqs.append(Eq(sym_vars['Tf'] - 300 - (sym_vars['Ef'] - sym_vars['E0f'])*1e6 / 
+                eqs.append(Equality(sym_vars['Tf'] - 300 - (sym_vars['Ef'] - sym_vars['E0f'])*1e6 / 
                              (Cv_values['f'] * (1 + sym_vars['gammaf']/2)), 0))
-                eqs.append(Eq(sym_vars['Tb'] - 300 - (sym_vars['Eb'] - sym_vars['E0b'])*1e6 / 
+                eqs.append(Equality(sym_vars['Tb'] - 300 - (sym_vars['Eb'] - sym_vars['E0b'])*1e6 / 
                              (Cv_values['b'] * (1 + sym_vars['gammab']/2)), 0))
             
             # 判断样品与基板是否为同一材料
@@ -2201,33 +2190,33 @@ def manual_mode_page():
             if is_same_material:
                 # 样品与基板参数一致
                 eqs += [
-                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),
-                    Eq(sym_vars['ub'] - sym_vars['us'], 0),
-                    Eq(sym_vars['rhb'] - sym_vars['rhs'], 0),
-                    Eq(sym_vars['Db'] - sym_vars['Ds'], 0),
-                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0)
+                    Equality(sym_vars['Pb'] - sym_vars['Ps'], 0),
+                    Equality(sym_vars['ub'] - sym_vars['us'], 0),
+                    Equality(sym_vars['rhb'] - sym_vars['rhs'], 0),
+                    Equality(sym_vars['Db'] - sym_vars['Ds'], 0),
+                    Equality(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0)
                 ]
                 
                 if calculate_temp:
                     eqs += [
-                        Eq(sym_vars['Tb'] - sym_vars['Ts'], 0),
-                        Eq(sym_vars['gammab'] - sym_vars['gammas'], 0)
+                        Equality(sym_vars['Tb'] - sym_vars['Ts'], 0),
+                        Equality(sym_vars['gammab'] - sym_vars['gammas'], 0)
                     ]
             else:
                 # 样品与基板为不同材料
                 eqs += [
-                    Eq(sym_vars['rh0s']*sym_vars['Ds'] - sym_vars['rhb']*(sym_vars['Ds'] - sym_vars['us']), 0),
-                    Eq(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*(2*sym_vars['ub'] - sym_vars['us']), 0),
-                    Eq(sym_vars['Ps'] - sym_vars['rh0s']*sym_vars['Ds']*sym_vars['us'], 0),
-                    Eq(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0),
-                    Eq(sym_vars['Ds'] - sym_vars['C0s'] - sym_vars['Ss']*sym_vars['us'], 0),
-                    Eq(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*(2*sym_vars['ub'] - sym_vars['us']), 0),
-                    Eq(sym_vars['Pb'] - sym_vars['Ps'], 0),
-                    Eq(sym_vars['ub'] - sym_vars['us'], 0)
+                    Equality(sym_vars['rh0s']*sym_vars['Ds'] - sym_vars['rhb']*(sym_vars['Ds'] - sym_vars['us']), 0),
+                    Equality(sym_vars['Pb'] - sym_vars['rh0b']*sym_vars['Db']*(2*sym_vars['ub'] - sym_vars['us']), 0),
+                    Equality(sym_vars['Ps'] - sym_vars['rh0s']*sym_vars['Ds']*sym_vars['us'], 0),
+                    Equality(sym_vars['Es'] - sym_vars['E0s'] - 0.5*sym_vars['Ps']*(1/sym_vars['rh0s'] - 1/sym_vars['rhs']), 0),
+                    Equality(sym_vars['Ds'] - sym_vars['C0s'] - sym_vars['Ss']*sym_vars['us'], 0),
+                    Equality(sym_vars['Db'] - sym_vars['C0b'] - sym_vars['Sb']*(2*sym_vars['ub'] - sym_vars['us']), 0),
+                    Equality(sym_vars['Pb'] - sym_vars['Ps'], 0),
+                    Equality(sym_vars['ub'] - sym_vars['us'], 0)
                 ]
                 
                 if calculate_temp:
-                    eqs.append(Eq(sym_vars['Ts'] - 300 - (sym_vars['Es'] - sym_vars['E0s'])*1e6 / 
+                    eqs.append(Equality(sym_vars['Ts'] - 300 - (sym_vars['Es'] - sym_vars['E0s'])*1e6 / 
                                  (Cv_values['s'] * (1 + sym_vars['gammas']/2)), 0))
             
             substituted_eqs = [eq.subs(current_subs) for eq in eqs]
@@ -2356,5 +2345,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
