@@ -1277,7 +1277,7 @@ def plot_results_streamlit(results, calculate_temp=True):
     
     # 4. 密度-压力图
     ax4 = fig.add_subplot(224 if calculate_temp else 223)
-    ax4.scatter(pf_values, rhf_values, c='green', label='飞片', s=10)
+    ax4.scatter(pf_values, rhf_values, c='green', label='Flyer', s=10)
     # 添加初始密度参考线
     if results and 'rh0f' in results[0]:
         avg_rh0 = np.mean([r.get('rh0f', 0) for r in results])
