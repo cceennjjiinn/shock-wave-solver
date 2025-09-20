@@ -2063,7 +2063,7 @@ def manual_mode_page():
         if not valid:
             return
             
-        combinations = itertools.product(*[[(k, val) for val in v] for k,        combinations = itertools.product(*[[(k, val) for val in v] for k, v in range_params.items()])
+        combinations = itertools.product(*[[(k, val) for val in v] for k, v in range_params.items()])
         
         # 截断过多的组合以提高性能
         combinations = list(combinations)
