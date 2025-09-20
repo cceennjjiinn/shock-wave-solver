@@ -27,7 +27,7 @@ def create_db_engine(db_type):
 def get_all_materials():
     """获取所有材料名称"""
     try:
-        query = "SELECT DISTINCT material FROM shock_wave_data"
+        query = "SELECT DISTINCT material FROM shock_wave_all_data"
         df = pd.read_sql(query, db_engine)
         return df['material'].tolist()
     except Exception as e:
