@@ -1276,9 +1276,9 @@ def plot_results_streamlit(results, calculate_temp=True):
                  yerr=[r.get('Pf_err', 0.1) for r in results],
                  xerr=[r.get('uf_err', 0.05) for r in results],
                  fmt='bo', ecolor='r', capsize=3, label='Flyer data', markersize=3)  # 减小点大小
-    ax1.set_xlabel('粒子速度 Up (km/s)')
-    ax1.set_ylabel('冲击压力 P (GPa)')
-    ax1.set_title('压力-粒子速度关系')
+    ax1.set_xlabel(' Up (km/s)')
+    ax1.set_ylabel('P (GPa)')
+    ax1.set_title('Up-P')
     ax1.legend(fontsize=8)
     ax1.grid(True)
     
@@ -1289,20 +1289,20 @@ def plot_results_streamlit(results, calculate_temp=True):
         tf_values = [r.get('Tf', 0) for r in results]
         
         ax2 = fig.add_subplot(222)
-        ax2.scatter(pf_values, tf_values, c='orange', label='飞片温度', s=10)  # 减小点大小
-        ax2.axhline(y=300, color='k', linestyle='--', label='室温 (300 K)')
-        ax2.set_xlabel('冲击压力 P (GPa)')
-        ax2.set_ylabel('冲击温度 T (K)')
-        ax2.set_title('温度-压力关系')
+        ax2.scatter(pf_values, tf_values, c='orange', label='Tf', s=10)  # 减小点大小
+        ax2.axhline(y=300, color='k', linestyle='--', label='room-temperature(300 K)')
+        ax2.set_xlabel(' P (GPa)')
+        ax2.set_ylabel(' T (K)')
+        ax2.set_title('T - P')
         ax2.legend(fontsize=8)
         ax2.grid(True)
     
     # 3. 冲击波速度-粒子速度图
     ax3 = fig.add_subplot(223 if calculate_temp else 222)
     ax3.scatter(uf_values, df_values, c='blue', label='飞片', s=10)
-    ax3.set_xlabel('粒子速度 Up (km/s)')
-    ax3.set_ylabel('冲击波速度 Us (km/s)')
-    ax3.set_title('冲击波速度-粒子速度关系')
+    ax3.set_xlabel('Up (km/s)')
+    ax3.set_ylabel(' Us (km/s)')
+    ax3.set_title('Us-Up')
     ax3.legend(fontsize=8)
     ax3.grid(True)
     
@@ -1313,9 +1313,9 @@ def plot_results_streamlit(results, calculate_temp=True):
     if results and 'rh0f' in results[0]:
         avg_rh0 = np.mean([r.get('rh0f', 0) for r in results])
         ax4.axhline(y=avg_rh0, color='k', linestyle='--', label=f'平均初始密度: {avg_rh0:.2f}')
-    ax4.set_xlabel('冲击压力 P (GPa)')
-    ax4.set_ylabel('压缩密度 (g/cm³)')
-    ax4.set_title('密度-压力关系')
+    ax4.set_xlabel(' P (GPa)')
+    ax4.set_ylabel('rh (g/cm³)')
+    ax4.set_title('rh - P')
     ax4.legend(fontsize=8)
     ax4.grid(True)
     
@@ -1892,8 +1892,6 @@ def manual_mode_page():
     with col3:
         sample_material = st.text_input("样品材料名称", value="铜", help="输入材料名称，例如：铜、铝")
     
-    # 飞片与基板界面速度关系说明
-    st.info("飞片速度w与粒子速度uf的关系为w = Df + uf（实验室坐标系）")
     
     # 比热容设置（仅当计算温度时显示）
     Cv_values = {}
